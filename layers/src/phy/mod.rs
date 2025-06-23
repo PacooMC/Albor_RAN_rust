@@ -155,11 +155,48 @@ impl EnhancedPhyLayer {
         )?;
         
         // Create OFDM components
-        let ofdm_modulator = OfdmModulator::new(
+        let mut ofdm_modulator = OfdmModulator::new(
             fft_size,
             config.cyclic_prefix,
             config.subcarrier_spacing,
         )?;
+        
+        // Configure OFDM modulator with proper bandwidth and baseband gain
+        // Calculate bandwidth in RBs
+        let bw_rb = match config.bandwidth {
+            Bandwidth::Bw5 => 25,
+            Bandwidth::Bw10 => 52,  // Band 3 with 15 kHz SCS
+            Bandwidth::Bw15 => 79,
+            Bandwidth::Bw20 => 106,
+            Bandwidth::Bw25 => 133,
+            Bandwidth::Bw30 => 160,
+            Bandwidth::Bw40 => 216,
+            Bandwidth::Bw50 => 270,
+            Bandwidth::Bw60 => match config.subcarrier_spacing {
+                SubcarrierSpacing::Scs15 => return Err(LayerError::InvalidConfiguration("60 MHz not supported with 15 kHz SCS".to_string())),
+                SubcarrierSpacing::Scs30 => 162,
+                SubcarrierSpacing::Scs60 => 81,
+                _ => return Err(LayerError::InvalidConfiguration("Invalid SCS for 60 MHz".to_string())),
+            },
+            Bandwidth::Bw80 => match config.subcarrier_spacing {
+                SubcarrierSpacing::Scs15 => return Err(LayerError::InvalidConfiguration("80 MHz not supported with 15 kHz SCS".to_string())),
+                SubcarrierSpacing::Scs30 => 217,
+                SubcarrierSpacing::Scs60 => 108,
+                _ => return Err(LayerError::InvalidConfiguration("Invalid SCS for 80 MHz".to_string())),
+            },
+            Bandwidth::Bw100 => match config.subcarrier_spacing {
+                SubcarrierSpacing::Scs15 => return Err(LayerError::InvalidConfiguration("100 MHz not supported with 15 kHz SCS".to_string())),
+                SubcarrierSpacing::Scs30 => 273,
+                SubcarrierSpacing::Scs60 => 135,
+                _ => return Err(LayerError::InvalidConfiguration("Invalid SCS for 100 MHz".to_string())),
+            },
+        };
+        
+        // Configure with srsRAN-compatible baseband gain
+        // Using 12 dB backoff as default (same as srsRAN)
+        let baseband_backoff_db = 12.0;
+        ofdm_modulator.configure_bandwidth(bw_rb, baseband_backoff_db);
+        info!("Configured OFDM modulator: bw_rb={}, baseband_backoff_db={} dB", bw_rb, baseband_backoff_db);
         
         let ofdm_demodulator = OfdmDemodulator::new(
             fft_size,

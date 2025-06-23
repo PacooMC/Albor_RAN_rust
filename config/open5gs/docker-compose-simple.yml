@@ -1,0 +1,156 @@
+services:
+  mongodb:
+    image: mongo:5.0
+    container_name: open5gs_mongodb
+    restart: always
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: open5gs
+      MONGO_INITDB_DATABASE: open5gs
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.100
+
+  webui:
+    image: docker.io/openverso/open5gs-webui:2.7.0
+    container_name: open5gs_webui
+    depends_on:
+      - mongodb
+    restart: always
+    environment:
+      DB_URI: mongodb://root:open5gs@mongodb:27017/open5gs?authSource=admin
+      NODE_ENV: development
+    ports:
+      - "9999:9999"
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.101
+
+  nrf:
+    image: docker.io/openverso/open5gs-nrf:2.7.0
+    container_name: open5gs_nrf
+    restart: always
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.10
+
+  scp:
+    image: docker.io/openverso/open5gs-scp:2.7.0
+    container_name: open5gs_scp
+    depends_on:
+      - nrf
+    restart: always
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.11
+
+  amf:
+    image: docker.io/openverso/open5gs-amf:2.7.0
+    container_name: open5gs_amf
+    depends_on:
+      - scp
+    restart: always
+    environment:
+      OPEN5GS_SBI_BIND_ADDR: 10.53.1.12
+    ports:
+      - "38412:38412/sctp"
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.12
+
+  ausf:
+    image: docker.io/openverso/open5gs-ausf:2.7.0
+    container_name: open5gs_ausf
+    depends_on:
+      - scp
+    restart: always
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.13
+
+  nssf:
+    image: docker.io/openverso/open5gs-nssf:2.7.0
+    container_name: open5gs_nssf
+    depends_on:
+      - scp
+    restart: always
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.14
+
+  bsf:
+    image: docker.io/openverso/open5gs-bsf:2.7.0
+    container_name: open5gs_bsf
+    depends_on:
+      - scp
+    restart: always
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.15
+
+  udm:
+    image: docker.io/openverso/open5gs-udm:2.7.0
+    container_name: open5gs_udm
+    depends_on:
+      - scp
+    restart: always
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.16
+
+  udr:
+    image: docker.io/openverso/open5gs-udr:2.7.0
+    container_name: open5gs_udr
+    depends_on:
+      - scp
+      - mongodb
+    restart: always
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.17
+
+  pcf:
+    image: docker.io/openverso/open5gs-pcf:2.7.0
+    container_name: open5gs_pcf
+    depends_on:
+      - scp
+      - mongodb
+    restart: always
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.18
+
+  smf:
+    image: docker.io/openverso/open5gs-smf:2.7.0
+    container_name: open5gs_smf
+    depends_on:
+      - scp
+    restart: always
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.20
+
+  upf:
+    image: docker.io/openverso/open5gs-upf:2.7.0
+    container_name: open5gs_upf
+    depends_on:
+      - smf
+    restart: always
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    networks:
+      open5gs:
+        ipv4_address: 10.53.1.21
+
+networks:
+  open5gs:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.53.1.0/24
+
+volumes:
+  mongodb_data:

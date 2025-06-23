@@ -309,6 +309,17 @@ impl ZmqRfDriver {
                         info!("TX: Received request from UE (dummy byte: 0x{:02X})", dummy_byte[0]);
                         *self.tx_state.write().await = TxState::RequestReceived;
                         
+                        // Log timing information
+                        static mut LAST_REQUEST_TIME: Option<std::time::Instant> = None;
+                        let now = std::time::Instant::now();
+                        unsafe {
+                            if let Some(last) = LAST_REQUEST_TIME {
+                                let delta = now.duration_since(last);
+                                debug!("TX: Time since last request: {:?}", delta);
+                            }
+                            LAST_REQUEST_TIME = Some(now);
+                        }
+                        
                         // Log circular buffer status
                         let read_idx = *self.tx_circular_read_idx.read().await;
                         let write_idx = *self.tx_circular_write_idx.read().await;
@@ -369,7 +380,28 @@ impl ZmqRfDriver {
             // DEBUG: Check if we have non-zero samples
             let non_zero_count = buffer.samples.iter().filter(|s| s.norm() > 0.0).count();
             if non_zero_count > 0 {
-                debug!("TX: Sending {} samples ({} non-zero)", buffer.samples.len(), non_zero_count);
+                // Calculate signal statistics
+                let avg_power: f32 = buffer.samples.iter().map(|s| s.norm_sqr()).sum::<f32>() / buffer.samples.len() as f32;
+                let peak_power: f32 = buffer.samples.iter().map(|s| s.norm_sqr()).fold(0.0, f32::max);
+                let avg_power_db = 10.0 * avg_power.log10();
+                let peak_power_db = 10.0 * peak_power.log10();
+                
+                // Show first few non-zero samples
+                let first_samples: Vec<String> = buffer.samples.iter()
+                    .take(10)
+                    .filter(|s| s.norm() > 0.0)
+                    .take(5)
+                    .map(|s| format!("({:.3}+{:.3}j)", s.re, s.im))
+                    .collect();
+                
+                info!("TX: Sending {} samples ({} non-zero), timestamp={}", 
+                      buffer.samples.len(), non_zero_count, buffer.timestamp);
+                info!("TX: Signal power: avg={:.3} ({:.1} dB), peak={:.3} ({:.1} dB)",
+                      avg_power, avg_power_db, peak_power, peak_power_db);
+                if !first_samples.is_empty() {
+                    info!("TX: First non-zero samples: {}", first_samples.join(", "));
+                }
+                info!("TX: Byte size: {} bytes", bytes.len());
             }
             
             // Send the samples
@@ -399,7 +431,7 @@ impl ZmqRfDriver {
             
             match tx_socket.send(&bytes, 0) {
                 Ok(_) => {
-                    debug!("TX: Sent {} zero samples (underrun)", zero_buffer.samples.len());
+                    warn!("TX: Sent {} zero samples (underrun) - no data in circular buffer!", zero_buffer.samples.len());
                     let mut stats = self.stats.write().await;
                     stats.tx_underruns += 1;
                     *self.tx_state.write().await = TxState::WaitingForRequest;
@@ -421,22 +453,28 @@ impl ZmqRfDriver {
         
         // Check if buffer is empty
         if read_idx == write_idx {
+            trace!("TX circular buffer empty: read={}, write={}", read_idx, write_idx);
             return None;
         }
         
         // Get buffer at read index
         let buffer = circular_buffer[read_idx].clone();
         
-        // Only advance read index if we have non-zero samples
-        let non_zero = buffer.samples.iter().any(|s| s.norm() > 0.0);
-        if non_zero {
-            // Advance read index
-            let mut read_idx_mut = self.tx_circular_read_idx.write().await;
-            *read_idx_mut = (*read_idx_mut + 1) % circular_buffer.len();
-            Some(buffer)
+        // Always advance read index to prevent stalling
+        let mut read_idx_mut = self.tx_circular_read_idx.write().await;
+        *read_idx_mut = (*read_idx_mut + 1) % circular_buffer.len();
+        drop(read_idx_mut);
+        
+        // Log buffer utilization
+        let used = if write_idx >= read_idx {
+            write_idx - read_idx
         } else {
-            None
-        }
+            circular_buffer.len() - read_idx + write_idx
+        };
+        trace!("TX circular buffer: used={}/{}, returning buffer at index {}", 
+               used, circular_buffer.len(), read_idx);
+        
+        Some(buffer)
     }
     
     /// Queue samples for transmission (using circular buffer like srsRAN)
@@ -836,6 +874,17 @@ impl AsyncZmqRf {
                     Ok(Ok(ZmqResponse::HandleTxRequestResult(Ok(_)))) => {
                         // Successfully handled a request
                         info!("ZMQ worker: Successfully handled TX request from UE!");
+                        
+                        // Log timing info for successful TX
+                        static mut LAST_SUCCESS_TIME: Option<tokio::time::Instant> = None;
+                        let now = tokio::time::Instant::now();
+                        unsafe {
+                            if let Some(last) = LAST_SUCCESS_TIME {
+                                let delta = now.duration_since(last);
+                                debug!("ZMQ worker: Time since last successful TX: {:?}", delta);
+                            }
+                            LAST_SUCCESS_TIME = Some(now);
+                        }
                     }
                     Ok(Ok(ZmqResponse::HandleTxRequestResult(Err(_)))) => {
                         // Error handling request - this is normal when no UE request

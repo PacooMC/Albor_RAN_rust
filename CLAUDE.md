@@ -284,4 +284,119 @@ Focus on Release 16 core functionalities:
 
 ---
 
+# 📡📡📡 5G SA CONFIGURATION REFERENCE 📡📡📡
+## MANDATORY NETWORK PARAMETERS
+
+### 🔧 Core Network Configuration
+- **Open5GS**: Deployed via Docker Compose in `config/open5gs/`
+- **PLMN**: 00101 (MCC=001, MNC=01)
+- **TAC**: 7
+- **AMF N2 Interface**: Port 38412 (SCTP)
+- **WebUI**: Port 9999
+
+### 📻 Radio Configuration
+- **Band**: 3 (1800 MHz FDD)
+- **DL ARFCN**: 368500 (1842.5 MHz)
+- **Bandwidth**: 10 MHz (52 PRBs)
+- **Sub-Carrier Spacing**: 15 kHz (FDD only)
+- **Sample Rate**: 23.04 MHz
+- **FFT Size**: 1024
+- **CP Length**: 72 samples (normal CP)
+
+### 🔌 ZMQ Interface Configuration
+```
+gNodeB TX → tcp://127.0.0.1:2000 → UE RX
+gNodeB RX ← tcp://127.0.0.1:2001 ← UE TX
+```
+
+### 📋 Reference Configuration Files
+All configuration files are located in the `config/` directory:
+```
+config/
+├── documentation/
+│   └── 5g_sa_setup.md         # Complete 5G SA documentation
+├── open5gs/
+│   ├── docker-compose.yml     # 5G Core deployment
+│   ├── config/amf.yaml        # AMF with PLMN 00101, TAC 7
+│   └── README.md              # Open5GS setup guide
+├── srsran_gnb/
+│   └── gnb_zmq.yml           # Reference gNodeB configuration
+└── srsue/
+    └── ue_nr_zmq.conf        # srsUE NR mode configuration
+```
+
+### ⚙️ Critical Parameters Our Implementation MUST Match
+1. **SSB Transmission**: Every 20 ms
+2. **SIB1 Period**: Every 160 ms (16 radio frames)
+3. **CORESET#0 Index**: 12 (for band 3, 10 MHz)
+4. **PRACH Config Index**: 0 (FDD format)
+5. **Cell ID**: 1
+6. **DMRS Positions**: 
+   - PDCCH: Subcarriers 1, 5, 9 in each RB
+   - PDSCH: Type 1, alternating pattern
+
+### 🚀 Quick Start Commands
+```bash
+# 1. Start Open5GS Core
+cd config/open5gs
+docker-compose up -d
+
+# 2. Run reference gNodeB (for testing)
+cd /opt/srsRAN_Project/build
+./apps/gnb/gnb -c /workspace/config/srsran_gnb/gnb_zmq.yml
+
+# 3. Run srsUE
+cd /opt/srsRAN_4G/build
+./srsue/src/srsue /workspace/config/srsue/ue_nr_zmq.conf
+```
+
+### 📊 Validation Checklist
+- [ ] UE detects cell: "Found Cell: PCI=1, PRB=52"
+- [ ] PRACH successful: "Random Access Complete"
+- [ ] Registration complete: "PDU Session Establishment successful"
+- [ ] Data plane active: IP connectivity established
+
+### 🔧 Complete 5G SA Test Setup
+```bash
+# Complete test script available
+./config/test_5g_sa_setup.sh          # Test with srsRAN Project gNodeB
+./config/test_5g_sa_setup.sh --use-our-gnb  # Test with our implementation
+```
+
+### 📡 Key Technical Parameters
+**Physical Layer**:
+- PSS/SSS in subcarriers -31 to 31 (center 6 RBs)
+- PBCH spans 20 RBs around DC
+- CORESET#0: 48 RBs starting from RB 0
+- PDCCH scrambled with SI-RNTI (0xFFFF) for SIB1
+- DMRS amplitude: 0.7071 (1/sqrt(2))
+
+**MAC Layer**:
+- SIB1 size: ~100 bytes with RACH config
+- SI window: 20 ms
+- PRACH occasions: frame%16==1, slot 9 (FDD)
+- RA response window: 10 slots
+
+**Network Configuration**:
+- Open5GS network: 10.53.1.0/24
+- AMF: 10.53.1.2:38412
+- UPF: 10.53.1.7 (N3 interface)
+- MongoDB: 10.53.1.100
+- DN subnet: 10.45.0.0/16
+
+### 📋 Testing Workflow
+1. **Deploy Open5GS**: `docker-compose up -d` in config/open5gs/
+2. **Check AMF**: Verify NGAP listening on port 38412
+3. **Start gNodeB**: Must see "N2: Connection to AMF" in logs
+4. **Start UE**: Watch for cell search, PRACH, RRC, and registration
+5. **Verify**: Check for assigned IP and ping connectivity
+
+### 🚨 Common Issues & Solutions
+- **Port conflicts**: Kill processes on 2000/2001 before ZMQ test
+- **SCTP issues**: Ensure kernel has SCTP support loaded
+- **Network namespace**: Use for UE isolation (optional)
+- **Timing**: Allow 10s for Open5GS initialization
+
+---
+
 **REMEMBER: This is NOT a random implementation. We are REPLICATING validated srsRAN functionality in Rust. Study first, implement second!**

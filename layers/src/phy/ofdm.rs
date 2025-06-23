@@ -29,6 +29,10 @@ pub struct OfdmModulator {
     scratch: Arc<Mutex<Vec<Complex32>>>,
     /// Baseband gain in dB (backoff from full scale)
     baseband_gain_db: f32,
+    /// Bandwidth in resource blocks
+    bw_rb: usize,
+    /// Apply FFT normalization (1/sqrt(N))
+    apply_fft_normalization: bool,
 }
 
 impl OfdmModulator {
@@ -47,6 +51,17 @@ impl OfdmModulator {
         // Create scratch buffer
         let scratch = Arc::new(Mutex::new(vec![Complex32::new(0.0, 0.0); ifft.get_inplace_scratch_len()]));
         
+        // Default bandwidth - will be updated by configure_bandwidth
+        let bw_rb = 52; // Default 10 MHz for 15 kHz SCS
+        
+        // Calculate baseband gain following srsRAN approach
+        // baseband_gain_dB = -convert_power_to_dB(bw_rb * NRE) - baseband_backoff_dB
+        // where NRE = 12 (number of resource elements per RB)
+        // and baseband_backoff_dB = 12.0 (srsRAN default)
+        let baseband_backoff_db = 12.0;
+        let power_db = 10.0 * (bw_rb as f32 * 12.0).log10();
+        let baseband_gain_db = -power_db - baseband_backoff_db;
+        
         Ok(Self {
             fft_size,
             cp_type,
@@ -54,7 +69,9 @@ impl OfdmModulator {
             ifft,
             cp_lengths,
             scratch,
-            baseband_gain_db: -3.0, // 3 dB backoff to prevent clipping, similar to srsRAN
+            baseband_gain_db,
+            bw_rb,
+            apply_fft_normalization: false, // srsRAN doesn't apply 1/sqrt(N)
         })
     }
     
@@ -70,9 +87,12 @@ impl OfdmModulator {
         }
         
         // Scale by FFT size and apply baseband gain
-        // srsRAN approach: normalize by 1/sqrt(N) and apply configured scale
-        // This ensures proper power levels for ZMQ transmission
-        let fft_scale = 1.0 / (self.fft_size as f32).sqrt();
+        // srsRAN approach: only apply configured scale, no FFT normalization by default
+        let fft_scale = if self.apply_fft_normalization {
+            1.0 / (self.fft_size as f32).sqrt()
+        } else {
+            1.0  // srsRAN uses scale=1.0 in OFDM modulator
+        };
         let baseband_gain = 10.0_f32.powf(self.baseband_gain_db / 20.0);
         let total_scale = fft_scale * baseband_gain;
         
@@ -126,6 +146,15 @@ impl OfdmModulator {
     /// Set baseband gain in dB
     pub fn set_baseband_gain_db(&mut self, gain_db: f32) {
         self.baseband_gain_db = gain_db;
+    }
+    
+    /// Configure bandwidth and update baseband gain accordingly
+    pub fn configure_bandwidth(&mut self, bw_rb: usize, baseband_backoff_db: f32) {
+        self.bw_rb = bw_rb;
+        // Update baseband gain following srsRAN formula
+        let power_db = 10.0 * (bw_rb as f32 * 12.0).log10();
+        self.baseband_gain_db = -power_db - baseband_backoff_db;
+        debug!("Configured OFDM modulator: bw_rb={}, baseband_gain_db={:.1}", bw_rb, self.baseband_gain_db);
     }
     
     /// Apply phase compensation for carrier frequency offset

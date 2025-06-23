@@ -1,0 +1,175 @@
+# This configuration file example shows how to configure the srsRAN Project gNB to allow srsUE to connect to it.
+# This specific example uses ZMQ in place of a USRP for the RF-frontend, and creates an FDD cell with 10 MHz bandwidth.
+# To run the srsRAN Project gNB with this config, use the following command: 
+# sudo ./gnb -c gnb_zmq.yml
+
+# AMF configuration
+cu_cp:
+  amf:
+    addr: 10.53.1.2                  # The address or hostname of the AMF.
+    port: 38412
+    bind_addr: 10.53.1.1             # A local IP that the gNB binds to for traffic from the AMF.
+    n2_bind_addr: 10.53.1.1          # Optional separate bind address for N2 interface
+    n2_bind_interface: auto          # Bind to specific interface for N2 (or auto)
+  inactivity_timer: 7200             # Sets the UE/PDU Session/DRB inactivity timer to 7200 seconds. Supported: [1 - 7200].
+  rrc:
+    force_reestablishment_fallback: true  # Force RRC reestablishment fallback
+    rrc_procedure_timeout_ms: 360         # Timeout for RRC procedures in ms
+
+# CU-UP configuration
+cu_up:
+  upf:
+    bind_addr: 10.53.1.1             # Bind address for N3 interface (GTP-U) 
+    bind_interface: auto             # Bind to specific interface (or auto)
+    ext_addr: auto                   # External IP address for UPF to reach gNB
+  gtpu:
+    bind_addr: 10.53.1.1             # Bind address for GTP-U
+    bind_interface: auto             # Bind to specific interface (or auto)
+    ext_addr: auto                   # External address for GTP-U
+
+# Radio Unit configuration with ZMQ
+ru_sdr:
+  device_driver: zmq                 # The RF driver name.
+  device_args: tx_port=tcp://127.0.0.1:2000,rx_port=tcp://127.0.0.1:2001,base_srate=23.04e6  # Optionally pass arguments to the selected RF driver.
+  srate: 23.04                       # RF sample rate might need to be adjusted according to selected bandwidth.
+  tx_gain: 75                        # Transmit gain of the RF might need to adjusted to the given situation.
+  rx_gain: 75                        # Receive gain of the RF might need to adjusted to the given situation.
+
+# Cell configuration
+cell_cfg:
+  dl_arfcn: 368500                   # ARFCN of the downlink carrier (center frequency).
+  band: 3                            # The NR band.
+  channel_bandwidth_MHz: 10          # Bandwith in MHz. Number of PRBs will be automatically derived.
+  common_scs: 15                     # Subcarrier spacing in kHz used for data.
+  plmn: "00101"                      # PLMN broadcasted by the gNB.
+  tac: 7                             # Tracking area code (needs to match the core configuration).
+  pci: 1                             # Physical cell ID
+
+  # PDCCH configuration
+  pdcch:
+    common:
+      ss0_index: 0                   # Set search space zero index to match srsUE capabilities
+      coreset0_index: 12             # Set search CORESET Zero index to match srsUE capabilities
+      max_coreset0_duration: 2       # Maximum CORESET#0 duration in symbols
+    dedicated:
+      ss2_type: common               # Search Space type, has to be set to common
+      dci_format_0_1_and_1_1: false  # Set correct DCI format (fallback)
+      
+  # PRACH configuration  
+  prach:
+    prach_config_index: 1            # Sets PRACH config to match what is expected by srsUE
+    zero_correlation_zone: 12       # Zero correlation zone
+    prach_frequency_start: 1        # PRACH frequency start
+    preamble_trans_max: 7           # Max preamble transmissions
+    power_ramping_step_db: 4        # Power ramping step in dB
+    ra_response_window: 10          # RA response window in slots
+    restricted_set_config: unrestricted  # PRACH restricted set config
+    ra_contention_resolution_timer: 64   # Contention resolution timer in ms
+    
+  # PDSCH configuration
+  pdsch:
+    mcs_table: qam64                 # Sets PDSCH MCS table to use 64-QAM
+    max_allocations_per_slot: 8      # Maximum PDSCH allocations per slot
+    nof_harqs: 16                    # Number of HARQ processes
+    max_nof_code_words: 1           # Maximum number of code words
+    
+  # PUSCH configuration
+  pusch:
+    mcs_table: qam64                 # Sets PUSCH MCS table to use 64-QAM 
+    max_allocations_per_slot: 8      # Maximum PUSCH allocations per slot
+    max_puschs_per_slot: 8          # Maximum number of PUSCH per slot
+    min_k2: 1                       # Minimum K2 value
+    
+  # PUCCH configuration
+  pucch:
+    sr_period_ms: 20                # SR period in milliseconds
+    nof_sr_resources: 2             # Number of SR resources per UE
+    f1_enable: true                 # Enable PUCCH format 1
+    f2_enable: true                 # Enable PUCCH format 2
+    
+  # SIB configuration
+  sib:
+    sib1_retx_period_ms: 160        # SIB1 retransmission period
+    sib1_mcs: 5                     # MCS for SIB1 transmission
+    coreset0_rb_offset: 0          # CORESET#0 RB offset
+    
+  # SSB configuration
+  ssb:
+    ssb_period_ms: 20               # SSB periodicity in ms
+    ssb_block_power_dbm: -20        # SSB transmit power
+
+  # UE timers and constants
+  ue_timers_and_constants:
+    t300: 1000                      # T300 timer in ms
+    t301: 1000                      # T301 timer in ms  
+    t310: 1000                      # T310 timer in ms
+    t311: 10000                     # T311 timer in ms
+    t319: 1000                      # T319 timer in ms
+    n310: 1                         # N310 constant
+    n311: 1                         # N311 constant
+
+  # Network slicing configuration
+  slicing:
+    - sst: 1                        # Slice/Service Type
+      sd: 1                         # Slice Differentiator (optional)
+
+# Logging configuration
+log:
+  filename: /tmp/gnb.log             # Path of the log file.
+  all_level: info                    # Logging level applied to all layers.
+  lib_level: warning                 # Logging level for library.
+  hex_max_size: 0                    # Maximum number of bytes to print for hex dumps.
+  broadcast_enabled: true            # Enable logging in the physical and MAC layer of broadcast messages.
+  
+  # Layer-specific logging levels
+  phy_level: info
+  mac_level: info
+  rlc_level: info
+  pdcp_level: info
+  rrc_level: info
+  ngap_level: info
+  sdap_level: info
+  e1ap_level: info
+  f1ap_level: info
+  f1u_level: info
+  du_level: info
+  cu_level: info
+  sec_level: info
+  fapi_level: warning
+  radio_level: info
+
+# PCAP configuration
+pcap:
+  mac_enable: false                  # Set to true to enable MAC-layer PCAPs.
+  mac_filename: /tmp/gnb_mac.pcap    # Path where the MAC PCAP is stored.
+  ngap_enable: false                 # Set to true to enable NGAP PCAPs.
+  ngap_filename: /tmp/gnb_ngap.pcap  # Path where the NGAP PCAP is stored.
+  e1ap_enable: false                 # Set to true to enable E1AP PCAPs.
+  e1ap_filename: /tmp/gnb_e1ap.pcap  # Path where the E1AP PCAP is stored.
+  f1ap_enable: false                 # Set to true to enable F1AP PCAPs.
+  f1ap_filename: /tmp/gnb_f1ap.pcap  # Path where the F1AP PCAP is stored.
+
+# Metrics configuration
+metrics:
+  enable_json_metrics: false         # Enable JSON metrics reporting
+  addr: 127.0.0.1                   # Metrics server address
+  port: 55555                       # Metrics server port
+
+# Expert configuration
+expert_config:
+  phy:
+    nof_dl_threads: 1               # Number of DL PHY threads
+    nof_ul_threads: 1               # Number of UL PHY threads
+    pusch_max_its: 10               # Maximum PUSCH decoding iterations
+    ldpc_max_its: 6                 # Maximum LDPC iterations
+    prach:
+      min_preamble_snr_db: 5        # Minimum preamble SNR for detection
+  mac:
+    sched:
+      max_pdschs_per_slot: 8        # Maximum PDSCHs per slot
+      max_puschs_per_slot: 8        # Maximum PUSCHs per slot
+      max_prachss_per_slot: 1       # Maximum PRACH occasions per slot
+      max_dl_pdus_per_slot: 8       # Maximum DL PDUs per slot
+      max_ul_pdus_per_slot: 8       # Maximum UL PDUs per slot
+  hal:
+    eal_args: auto                  # EAL arguments for DPDK

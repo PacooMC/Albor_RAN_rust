@@ -1,0 +1,60 @@
+services:
+  mongodb:
+    image: mongo:5.0
+    container_name: open5gs-mongodb
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: open5gs
+      MONGO_INITDB_DATABASE: open5gs
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+
+  open5gs:
+    image: openverso/open5gs:2.7.0
+    container_name: open5gs-5gc
+    restart: always
+    depends_on:
+      - mongodb
+    ports:
+      - "3000:9999"   # WebUI
+      - "38412:38412/sctp"  # AMF N2 (NGAP)
+    environment:
+      - DB_URI=mongodb://root:open5gs@mongodb:27017/open5gs?authSource=admin
+      - OPEN5GS_LOG_LEVEL=info
+    volumes:
+      - ./logs:/var/log/open5gs
+    command: |
+      bash -c "
+        # Create log directory
+        mkdir -p /var/log/open5gs
+        
+        # Start all Open5GS components
+        /opt/open5gs/bin/open5gs-nrfd &
+        sleep 2
+        /opt/open5gs/bin/open5gs-scpd &
+        sleep 2
+        /opt/open5gs/bin/open5gs-amfd &
+        /opt/open5gs/bin/open5gs-smfd &
+        /opt/open5gs/bin/open5gs-upfd &
+        /opt/open5gs/bin/open5gs-ausfd &
+        /opt/open5gs/bin/open5gs-udmd &
+        /opt/open5gs/bin/open5gs-udrd &
+        /opt/open5gs/bin/open5gs-pcfd &
+        /opt/open5gs/bin/open5gs-nssfd &
+        /opt/open5gs/bin/open5gs-bsfd &
+        
+        # Start WebUI
+        cd /opt/open5gs/webui && npm run dev &
+        
+        # Keep container running
+        tail -f /dev/null
+      "
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+
+volumes:
+  mongodb_data:

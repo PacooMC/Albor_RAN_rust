@@ -376,6 +376,47 @@
     - Timing synchronization may be off
     - ASN.1 encoding of SIB1 needs verification
 
+### 18. 5G SA Configuration Infrastructure (2025-06-23)
+- ✅ **Created config/ Directory Structure**:
+  - Complete 5G SA documentation extracted from srsRAN
+  - Open5GS Docker Compose deployment
+  - Reference gNodeB and UE configurations
+  - Test scripts for complete 5G SA setup
+  
+- ✅ **Documented Network Parameters**:
+  - PLMN: 00101, TAC: 7
+  - Band 3 FDD, DL ARFCN: 368500 (1842.5 MHz)
+  - 10 MHz bandwidth (52 PRBs)
+  - CORESET#0 index: 12
+  - Sample rate: 23.04 MHz
+  
+- ✅ **Updated CLAUDE.md**:
+  - Added complete 5G SA configuration reference section
+  - Quick start commands for testing
+  - Technical parameters for our implementation
+  - Troubleshooting guide
+
+### 19. Root Cause Analysis - UE Detection Issue (2025-06-23)
+- ✅ **Bandwidth Configuration Fixed**:
+  - Changed from 20 MHz to 10 MHz to match UE expectation
+  - Fixed FFT size from 2048 to 1024
+  - Adjusted CP length to 66 samples
+  
+- ✅ **Signal Transmission Analysis**:
+  - SSB (symbols 0-3) correctly generated with non-zero values
+  - PSS at 20 dB amplitude, correctly mapped
+  - SSS and PBCH with DMRS properly generated
+  
+- ⚠️ **Critical Issue Identified**:
+  - Only SSB slots contain signals, all other symbols are zeros
+  - UE expects continuous signal presence for cell search
+  - Sparse transmission pattern prevents synchronization
+  
+- 📋 **Next Steps**:
+  - Implement continuous signal transmission
+  - Add reference signals to all symbols
+  - Ensure proper power levels across all transmissions
+
 ## Notes for Next Developer
 - DevContainer is fully configured and ready to use
 - Mount reference UE at /opt/reference-ue if available

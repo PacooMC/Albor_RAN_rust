@@ -8,6 +8,12 @@ pub mod resource_grid;
 pub mod ofdm;
 pub mod pss_sss;
 pub mod pbch;
+pub mod polar;
+pub mod ldpc;
+pub mod pdcch;
+pub mod pdsch;
+pub mod prach;
+pub mod dmrs;
 
 // Re-export commonly used types
 pub use frame_structure::{FrameStructure, SlotConfig, SymbolType};
@@ -15,6 +21,9 @@ pub use resource_grid::{ResourceGrid, ResourceElement};
 pub use ofdm::{OfdmModulator, OfdmDemodulator};
 pub use pss_sss::{PssGenerator, SssGenerator, CellSearchResult};
 pub use pbch::{PbchProcessor, Mib};
+pub use pdcch::{PdcchProcessor, DciFormat10SiRnti};
+pub use pdsch::{PdschProcessor, PdschConfig};
+pub use prach::{PrachDetector, PrachDetectionResult, RachConfigCommon};
 
 use crate::{LayerError, mac::MacPhyInterface};
 use common::types::{Bandwidth, SubcarrierSpacing, Pci, CellId};
@@ -111,6 +120,9 @@ pub struct EnhancedPhyLayer {
     pss_generator: PssGenerator,
     sss_generator: SssGenerator,
     pbch_processor: PbchProcessor,
+    pdcch_processor: PdcchProcessor,
+    pdsch_processor: PdschProcessor,
+    prach_detector: Arc<Mutex<PrachDetector>>,
     state: Arc<RwLock<PhyState>>,
     running: Arc<RwLock<bool>>,
     initialized: bool,
@@ -155,12 +167,31 @@ impl EnhancedPhyLayer {
             config.subcarrier_spacing,
         )?;
         
-        // Create synchronization signal generators
-        let pss_generator = PssGenerator::new(config.pci)?;
+        // Create synchronization signal generators with higher amplitude for better detection
+        // Use 20 dB gain for PSS to ensure UE can detect it during cell search
+        let pss_generator = PssGenerator::new_with_amplitude_db(config.pci, 20.0)?;
         let sss_generator = SssGenerator::new(config.pci)?;
         
         // Create PBCH processor
         let pbch_processor = PbchProcessor::new(config.pci, config.cell_id)?;
+        
+        // Create cell configuration for PDCCH/PDSCH
+        let cell_config = Arc::new(common::CellConfig {
+            pci: config.pci.0,
+            cell_id: config.cell_id.0,
+            bandwidth: config.bandwidth,
+            subcarrier_spacing: config.subcarrier_spacing,
+        });
+        
+        // Create PDCCH processor
+        let pdcch_processor = PdcchProcessor::new(cell_config.clone());
+        
+        // Create PDSCH processor
+        let pdsch_processor = PdschProcessor::new(cell_config);
+        
+        // Create PRACH detector with default RACH configuration
+        let rach_config = RachConfigCommon::default();
+        let prach_detector = PrachDetector::new(config.cell_id, rach_config)?;
         
         Ok(Self {
             config,
@@ -172,6 +203,9 @@ impl EnhancedPhyLayer {
             pss_generator,
             sss_generator,
             pbch_processor,
+            pdcch_processor,
+            pdsch_processor,
+            prach_detector: Arc::new(Mutex::new(prach_detector)),
             state: Arc::new(RwLock::new(PhyState::new())),
             running: Arc::new(RwLock::new(false)),
             initialized: false,
@@ -260,6 +294,8 @@ impl EnhancedPhyLayer {
         let pss_generator = self.pss_generator.clone();
         let sss_generator = self.sss_generator.clone();
         let pbch_processor = self.pbch_processor.clone();
+        let pdcch_processor = self.pdcch_processor.clone();
+        let pdsch_processor = self.pdsch_processor.clone();
         debug!("Getting RF TX channel");
         let rf_tx_channel = self.rf_tx_channel.as_ref().unwrap().clone();
         debug!("RF TX channel obtained");
@@ -327,6 +363,14 @@ impl EnhancedPhyLayer {
                         debug!("Processing sync symbol: frame={}, slot={}, symbol={}", frame, slot, symbol);
                         if frame_structure.is_pss_symbol(symbol) {
                             let pss_symbols = pss_generator.generate();
+                            
+                            // Calculate PSS power metrics
+                            let pss_avg_power: f32 = pss_symbols.iter().map(|s| s.norm_sqr()).sum::<f32>() / pss_symbols.len() as f32;
+                            let pss_peak_power: f32 = pss_symbols.iter().map(|s| s.norm_sqr()).fold(0.0, f32::max);
+                            info!("PSS signal power: avg={:.3} ({:.1} dB), peak={:.3} ({:.1} dB), amplitude=20 dB",
+                                  pss_avg_power, 10.0 * pss_avg_power.log10(),
+                                  pss_peak_power, 10.0 * pss_peak_power.log10());
+                            
                             {
                                 let mut grid = resource_grid.lock().await;
                                 let _ = grid.map_pss(symbol, &pss_symbols);
@@ -336,8 +380,9 @@ impl EnhancedPhyLayer {
                                 let grid = resource_grid.lock().await;
                                 let symbol_data = grid.get_symbol(symbol);
                                 let non_zero_count = symbol_data.iter().filter(|x| x.norm() > 0.0).count();
-                                debug!("DEBUG: After PSS mapping, symbol {} has {} non-zero samples out of {}", 
-                                      symbol, non_zero_count, symbol_data.len());
+                                let grid_avg_power: f32 = symbol_data.iter().map(|s| s.norm_sqr()).sum::<f32>() / symbol_data.len() as f32;
+                                debug!("DEBUG: After PSS mapping, symbol {} has {} non-zero samples out of {}, grid avg power={:.6} ({:.1} dB)", 
+                                      symbol, non_zero_count, symbol_data.len(), grid_avg_power, 10.0 * grid_avg_power.log10());
                             }
                             info!("Mapped PSS at frame={}, slot={}, symbol={} (SSB transmission)", frame, slot, symbol);
                         }
@@ -355,7 +400,7 @@ impl EnhancedPhyLayer {
                     // Map PBCH based on MAC scheduling or fallback
                     let should_send_pbch = slot_schedule.as_ref()
                         .and_then(|s| s.ssb_info.as_ref())
-                        .map(|ssb| frame_structure.is_pbch_symbol(frame, slot, symbol))
+                        .map(|_ssb| frame_structure.is_pbch_symbol(frame, slot, symbol))
                         .unwrap_or_else(|| frame_structure.is_pbch_symbol(frame, slot, symbol));
                         
                     if should_send_pbch {
@@ -374,6 +419,33 @@ impl EnhancedPhyLayer {
                     // Map SIB1 if scheduled by MAC
                     if let Some(schedule) = &slot_schedule {
                         if let Some(sib1_info) = &schedule.sib1_info {
+                            // Map PDCCH for SIB1 (only in first symbol of CORESET)
+                            if symbol == sib1_info.coreset.start_symbol {
+                                // Create DCI Format 1_0 for SI-RNTI
+                                let dci_1_0 = DciFormat10SiRnti {
+                                    frequency_resource: sib1_info.frequency_domain_assignment,
+                                    time_resource: sib1_info.time_domain_assignment,
+                                    vrb_to_prb_mapping: 0, // Non-interleaved
+                                    modulation_coding_scheme: sib1_info.mcs_index,
+                                    redundancy_version: 0,
+                                    system_information_indicator: 0, // SIB1
+                                };
+                                
+                                // Process PDCCH
+                                {
+                                    let mut grid = resource_grid.lock().await;
+                                    pdcch_processor.process_sib1_pdcch(
+                                        &mut *grid,
+                                        &sib1_info.coreset,
+                                        &dci_1_0,
+                                        sib1_info.aggregation_level,
+                                        sib1_info.cce_index,
+                                    );
+                                }
+                                info!("Mapped PDCCH for SIB1 at frame={}, slot={}, symbol={}", frame, slot, symbol);
+                            }
+                            
+                            // Map PDSCH for SIB1 data
                             let sib1_start = sib1_info.pdsch_time_alloc.start_symbol;
                             let sib1_length = sib1_info.pdsch_time_alloc.num_symbols;
                             if symbol >= sib1_start && symbol < sib1_start + sib1_length {
@@ -381,8 +453,36 @@ impl EnhancedPhyLayer {
                                 if let Some(mac) = &mac_interface {
                                     match mac.get_sib1_payload().await {
                                         Ok(sib1_payload) => {
-                                            // TODO: Implement SIB1 to PDSCH mapping
-                                            info!("SIB1 scheduled at frame={}, slot={}, symbol={} (payload: {} bytes)", 
+                                            // Create PDSCH configuration
+                                            let pdsch_config = PdschConfig {
+                                                tbs_bytes: sib1_info.tbs_bytes,
+                                                modulation: sib1_info.modulation,
+                                                num_layers: 1,
+                                                rv: 0,
+                                                ldpc_base_graph: if sib1_info.tbs_bytes > 292 { 1 } else { 2 },
+                                                ndi: true,
+                                                harq_id: 0,
+                                                prb_allocation: sib1_info.prb_allocation.clone(),
+                                                start_symbol: sib1_start,
+                                                num_symbols: sib1_length,
+                                                dmrs_type: 0,
+                                                dmrs_additional_pos: 0,
+                                                dmrs_config_type: 0,
+                                                n_id: config.pci.0,
+                                                rnti: 0xFFFF, // SI-RNTI
+                                                code_block_size: (sib1_info.tbs_bytes + 3) * 8, // TBS + CRC in bits
+                                            };
+                                            
+                                            // Process PDSCH
+                                            {
+                                                let mut grid = resource_grid.lock().await;
+                                                pdsch_processor.process_sib1_pdsch(
+                                                    &mut *grid,
+                                                    &sib1_payload,
+                                                    &pdsch_config,
+                                                );
+                                            }
+                                            info!("Mapped PDSCH for SIB1 at frame={}, slot={}, symbol={} (payload: {} bytes)", 
                                                   frame, slot, symbol, sib1_payload.len());
                                         }
                                         Err(e) => {
@@ -453,17 +553,83 @@ impl EnhancedPhyLayer {
     /// Start uplink processing
     fn start_uplink_processing(&self) -> tokio::task::JoinHandle<()> {
         let running = self.running.clone();
+        let state = self.state.clone();
+        let prach_detector = self.prach_detector.clone();
+        let mac_interface = self.mac_interface.clone();
+        // We don't clone RF interface, just check if it exists
+        let frame_structure = self.frame_structure.clone();
         
         tokio::spawn(async move {
+            info!("Uplink processing task started");
+            
+            // Use similar timing as downlink
+            let mut next_slot_time = tokio::time::Instant::now();
+            let slot_duration = frame_structure.slot_duration();
+            let slots_per_frame = frame_structure.slots_per_frame();
+            
             while *running.read().await {
-                // TODO: Implement uplink processing with proper RF receiver handle
-                // Currently only downlink is implemented
+                // Get current timing
+                let (frame, slot) = {
+                    let state_guard = state.read().await;
+                    (state_guard.frame_number, state_guard.slot_number)
+                };
                 
-                // Small delay to prevent busy loop
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                // Check if this is a PRACH occasion
+                let is_prach_slot = {
+                    let mut detector = prach_detector.lock().await;
+                    detector.is_prach_occasion(frame, slot)
+                };
+                
+                if is_prach_slot {
+                    debug!("PRACH occasion at frame={}, slot={}", frame, slot);
+                    
+                    // For now, simulate PRACH detection since RF receiver is not implemented
+                    // In a real implementation, we would receive samples from RF
+                    {
+                        // For now, we simulate PRACH detection since uplink is not fully implemented
+                        // In a real implementation, we would:
+                        // 1. Receive samples from RF
+                        // 2. Pass them to PRACH detector
+                        // 3. Report detections to MAC
+                        
+                        // Simulate receiving samples (placeholder)
+                        let dummy_samples = vec![num_complex::Complex32::new(0.0, 0.0); 30720];
+                        
+                        // Detect PRACH preambles
+                        let detection_result = {
+                            let mut detector = prach_detector.lock().await;
+                            match detector.detect(&dummy_samples, frame, slot) {
+                                Ok(result) => result,
+                                Err(e) => {
+                                    error!("PRACH detection failed: {}", e);
+                                    continue;
+                                }
+                            }
+                        };
+                        
+                        // Report to MAC if preambles detected
+                        if !detection_result.preambles.is_empty() {
+                            if let Some(mac) = &mac_interface {
+                                if let Err(e) = mac.report_prach_detection(detection_result).await {
+                                    error!("Failed to report PRACH detection to MAC: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Wait until next slot
+                next_slot_time += slot_duration;
+                let now = tokio::time::Instant::now();
+                if next_slot_time > now {
+                    tokio::time::sleep_until(next_slot_time).await;
+                } else {
+                    // Running behind
+                    next_slot_time = now;
+                }
             }
             
-            debug!("Uplink processing stopped");
+            info!("Uplink processing stopped");
         })
     }
     

@@ -8,7 +8,7 @@ pub mod sib1;
 use crate::{LayerError, ProtocolLayer};
 use async_trait::async_trait;
 use bytes::Bytes;
-use tracing::{debug, info, error};
+use tracing::{debug, info};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
@@ -39,6 +39,9 @@ pub trait MacPhyInterface: Send + Sync {
     
     /// Get SIB1 payload
     async fn get_sib1_payload(&self) -> Result<Bytes, LayerError>;
+    
+    /// Report PRACH detection from PHY
+    async fn report_prach_detection(&self, detection: crate::phy::prach::PrachDetectionResult) -> Result<(), LayerError>;
 }
 
 /// Enhanced MAC layer implementation
@@ -149,6 +152,31 @@ impl MacPhyInterface for EnhancedMacLayer {
         
         let payload = self.sib1_payload.read().await;
         payload.clone().ok_or_else(|| LayerError::InvalidState("SIB1 payload not generated".into()))
+    }
+    
+    async fn report_prach_detection(&self, detection: crate::phy::prach::PrachDetectionResult) -> Result<(), LayerError> {
+        if !self.initialized {
+            return Err(LayerError::NotInitialized);
+        }
+        
+        info!("PRACH detection reported: frame={}, slot={}, {} preambles detected", 
+              detection.frame, detection.slot, detection.preambles.len());
+        
+        // Process each detected preamble
+        for preamble in &detection.preambles {
+            info!("  Preamble {}: TA={:.1}us, metric={:.2}, power={:.1}dBm",
+                  preamble.preamble_index, 
+                  preamble.timing_advance_us,
+                  preamble.detection_metric,
+                  preamble.power_dbm);
+            
+            // TODO: Initiate Random Access procedure
+            // 1. Allocate TC-RNTI for the UE
+            // 2. Schedule Random Access Response (RAR)
+            // 3. Prepare Msg2 with timing advance command
+        }
+        
+        Ok(())
     }
 }
 

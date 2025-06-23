@@ -5,7 +5,7 @@
 use crate::LayerError;
 use common::types::Pci;
 use num_complex::Complex32;
-use tracing::debug;
+use tracing::{debug, info};
 
 /// PSS sequence length
 const PSS_LENGTH: usize = 127;
@@ -25,6 +25,8 @@ pub struct PssGenerator {
     nid2: u8,
     /// Pre-generated PSS sequence
     sequence: Vec<Complex32>,
+    /// PSS amplitude (linear scale)
+    amplitude: f32,
 }
 
 impl PssGenerator {
@@ -33,25 +35,61 @@ impl PssGenerator {
         // Extract PSS sequence ID from PCI
         let nid2 = (pci.0 % 3) as u8;
         
-        // Generate PSS sequence
+        // Generate PSS sequence with unit amplitude
         let sequence = generate_pss_sequence(nid2);
+        
+        // Default amplitude: 1.0 (0 dB) - matches srsRAN default
+        // In srsRAN, PSS can be 0 dB or 3 dB higher than SSS
+        // We'll default to 3 dB for better detection
+        let amplitude = 10.0_f32.powf(3.0 / 20.0); // 3 dB = ~1.412
         
         Ok(Self {
             pci,
             nid2,
             sequence,
+            amplitude,
+        })
+    }
+    
+    /// Create a new PSS generator with specific amplitude in dB
+    pub fn new_with_amplitude_db(pci: Pci, amplitude_db: f32) -> Result<Self, LayerError> {
+        // Extract PSS sequence ID from PCI
+        let nid2 = (pci.0 % 3) as u8;
+        
+        // Generate PSS sequence
+        let sequence = generate_pss_sequence(nid2);
+        
+        // Convert dB to linear amplitude
+        let amplitude = 10.0_f32.powf(amplitude_db / 20.0);
+        
+        Ok(Self {
+            pci,
+            nid2,
+            sequence,
+            amplitude,
         })
     }
     
     /// Generate PSS symbols
     pub fn generate(&self) -> Vec<Complex32> {
-        debug!("Generating PSS, sequence length: {}", self.sequence.len());
-        self.sequence.clone()
+        debug!("Generating PSS, sequence length: {}, amplitude: {:.3}", 
+               self.sequence.len(), self.amplitude);
+        
+        // Apply amplitude scaling
+        self.sequence.iter()
+            .map(|&s| s * self.amplitude)
+            .collect()
     }
     
     /// Get PSS sequence ID
     pub fn nid2(&self) -> u8 {
         self.nid2
+    }
+    
+    /// Set PSS amplitude in dB
+    pub fn set_amplitude_db(&mut self, amplitude_db: f32) {
+        self.amplitude = 10.0_f32.powf(amplitude_db / 20.0);
+        info!("PSS amplitude set to {} dB (linear: {:.3})", amplitude_db, self.amplitude);
     }
 }
 
@@ -63,6 +101,8 @@ pub struct SssGenerator {
     /// SSS sequence IDs
     nid1: u16,
     nid2: u8,
+    /// SSS amplitude (linear scale)
+    amplitude: f32,
 }
 
 impl SssGenerator {
@@ -72,10 +112,31 @@ impl SssGenerator {
         let nid2 = (pci.0 % 3) as u8;
         let nid1 = pci.0 / 3;
         
+        // Default amplitude: 1.0 (0 dB) - matches srsRAN
+        let amplitude = 1.0;
+        
         Ok(Self {
             pci,
             nid1,
             nid2,
+            amplitude,
+        })
+    }
+    
+    /// Create a new SSS generator with specific amplitude in dB
+    pub fn new_with_amplitude_db(pci: Pci, amplitude_db: f32) -> Result<Self, LayerError> {
+        // Extract SSS parameters from PCI
+        let nid2 = (pci.0 % 3) as u8;
+        let nid1 = pci.0 / 3;
+        
+        // Convert dB to linear amplitude
+        let amplitude = 10.0_f32.powf(amplitude_db / 20.0);
+        
+        Ok(Self {
+            pci,
+            nid1,
+            nid2,
+            amplitude,
         })
     }
     
@@ -83,7 +144,21 @@ impl SssGenerator {
     pub fn generate(&self, frame_number: u32) -> Vec<Complex32> {
         // SSS changes based on frame number for frame timing
         let is_subframe_5 = (frame_number % 2) == 1;
-        generate_sss_sequence(self.nid1, self.nid2, is_subframe_5)
+        let sequence = generate_sss_sequence(self.nid1, self.nid2, is_subframe_5);
+        
+        debug!("Generating SSS, sequence length: {}, amplitude: {:.3}", 
+               sequence.len(), self.amplitude);
+        
+        // Apply amplitude scaling
+        sequence.iter()
+            .map(|&s| s * self.amplitude)
+            .collect()
+    }
+    
+    /// Set SSS amplitude in dB
+    pub fn set_amplitude_db(&mut self, amplitude_db: f32) {
+        self.amplitude = 10.0_f32.powf(amplitude_db / 20.0);
+        info!("SSS amplitude set to {} dB (linear: {:.3})", amplitude_db, self.amplitude);
     }
     
     /// Get cell group ID

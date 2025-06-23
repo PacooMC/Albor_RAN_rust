@@ -3,9 +3,9 @@
 //! Implements SIB1 message creation according to 3GPP TS 38.331
 
 use crate::LayerError;
-use common::types::{CellId, Bandwidth};
+use common::types::CellId;
 use bytes::{Bytes, BytesMut, BufMut};
-use tracing::{debug, info};
+use tracing::info;
 
 /// SIB1 configuration
 #[derive(Debug, Clone)]
@@ -156,7 +156,31 @@ impl Sib1Generator {
         buffer.put_u8(0x00);  // Default configuration
         
         // Uplink Config Common (minimal for FDD)
-        buffer.put_u8(0x00);  // Default configuration
+        buffer.put_u8(0x01);  // Presence flags - RACH config present
+        
+        // RACH-ConfigCommon
+        // RACH-ConfigGeneric
+        buffer.put_u8(0);     // prach-ConfigurationIndex = 0 (FDD)
+        buffer.put_u8(0x00);  // msg1-FDM = 1 (one)
+        buffer.put_u16(0);    // msg1-FrequencyStart = 0
+        buffer.put_u8(12);    // zeroCorrelationZoneConfig = 12
+        buffer.put_i8(-104);  // preambleReceivedTargetPower = -104 dBm
+        buffer.put_u8(10);    // ra-ResponseWindow = sl10
+        buffer.put_u8(7);     // preambleTransMax = n7
+        buffer.put_u8(4);     // powerRampingStep = dB4
+        
+        // ssb-perRACH-OccasionAndCB-PreamblesPerSSB
+        buffer.put_u8(0x01);  // one SSB per RACH occasion
+        buffer.put_u8(64);    // 64 CB preambles per SSB
+        
+        // PRACH root sequence index
+        buffer.put_u16(0);    // rootSequenceIndex = 0
+        
+        // msg1-SubcarrierSpacing (not present - use default)
+        buffer.put_u8(0x00);
+        
+        // restrictedSetConfig = unrestricted
+        buffer.put_u8(0x00);
         
         // Supplementary Uplink (not present)
         buffer.put_u8(0x00);

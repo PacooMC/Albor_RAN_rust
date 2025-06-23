@@ -8,6 +8,7 @@ use num_complex::Complex32;
 use rustfft::{FftPlanner, Fft};
 use std::sync::{Arc, Mutex};
 use std::f32::consts::PI;
+use tracing::debug;
 
 use super::{CyclicPrefix, ResourceGrid};
 
@@ -26,6 +27,8 @@ pub struct OfdmModulator {
     cp_lengths: Vec<usize>,
     /// Scratch buffer for FFT
     scratch: Arc<Mutex<Vec<Complex32>>>,
+    /// Baseband gain in dB (backoff from full scale)
+    baseband_gain_db: f32,
 }
 
 impl OfdmModulator {
@@ -51,6 +54,7 @@ impl OfdmModulator {
             ifft,
             cp_lengths,
             scratch,
+            baseband_gain_db: -3.0, // 3 dB backoff to prevent clipping, similar to srsRAN
         })
     }
     
@@ -65,11 +69,25 @@ impl OfdmModulator {
             self.ifft.process_with_scratch(&mut freq_samples, &mut scratch);
         }
         
-        // Scale by FFT size
-        let scale = 1.0 / (self.fft_size as f32).sqrt();
+        // Scale by FFT size and apply baseband gain
+        // srsRAN approach: normalize by 1/sqrt(N) and apply configured scale
+        // This ensures proper power levels for ZMQ transmission
+        let fft_scale = 1.0 / (self.fft_size as f32).sqrt();
+        let baseband_gain = 10.0_f32.powf(self.baseband_gain_db / 20.0);
+        let total_scale = fft_scale * baseband_gain;
+        
+        // Apply phase compensation if needed (srsRAN does this)
+        // For now, we'll keep it simple without phase compensation
+        
         for sample in &mut freq_samples {
-            *sample *= scale;
+            *sample *= total_scale;
         }
+        
+        // Log signal power after scaling
+        let avg_power: f32 = freq_samples.iter().map(|s| s.norm_sqr()).sum::<f32>() / freq_samples.len() as f32;
+        let peak_power: f32 = freq_samples.iter().map(|s| s.norm_sqr()).fold(0.0, f32::max);
+        debug!("OFDM symbol {}: avg power={:.6} ({:.1} dB), peak power={:.6} ({:.1} dB), scale={:.6}", 
+               symbol_index, avg_power, 10.0 * avg_power.log10(), peak_power, 10.0 * peak_power.log10(), total_scale);
         
         // Add cyclic prefix
         let cp_len = self.cp_lengths[symbol_index as usize % self.cp_lengths.len()];
@@ -103,6 +121,11 @@ impl OfdmModulator {
     /// Get total samples per symbol including CP
     pub fn symbol_length(&self) -> usize {
         self.fft_size + self.cp_lengths[0]
+    }
+    
+    /// Set baseband gain in dB
+    pub fn set_baseband_gain_db(&mut self, gain_db: f32) {
+        self.baseband_gain_db = gain_db;
     }
     
     /// Apply phase compensation for carrier frequency offset

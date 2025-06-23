@@ -4,8 +4,7 @@
 
 use crate::LayerError;
 use common::types::{SubcarrierSpacing, Bandwidth, CellId};
-use tracing::{debug, info, trace};
-use std::time::Duration;
+use tracing::{debug, info};
 
 /// CORESET#0 configuration based on 3GPP TS 38.213
 #[derive(Debug, Clone)]
@@ -88,6 +87,24 @@ pub struct Sib1ScheduleInfo {
     pub pdsch_time_alloc: PdschTimeAlloc,
     /// SIB1 payload size in bytes
     pub payload_size: usize,
+    /// CORESET configuration (detailed)
+    pub coreset: common::CorsetConfig,
+    /// Frequency domain assignment for DCI
+    pub frequency_domain_assignment: u16,
+    /// Time domain assignment for DCI
+    pub time_domain_assignment: u8,
+    /// MCS index
+    pub mcs_index: u8,
+    /// Aggregation level for PDCCH
+    pub aggregation_level: u8,
+    /// CCE index
+    pub cce_index: u16,
+    /// Transport block size in bytes
+    pub tbs_bytes: usize,
+    /// Modulation scheme
+    pub modulation: common::ModulationScheme,
+    /// PRB allocation
+    pub prb_allocation: Vec<u16>,
 }
 
 /// PDSCH time domain resource allocation
@@ -167,13 +184,35 @@ impl MacScheduler {
         if self.is_sib1_slot(frame, slot, slots_per_frame) {
             // SIB1 is transmitted in slots following SSB
             // Use Type0-PDCCH CSS n0 configuration
+            // Calculate PDCCH and PDSCH parameters for SIB1
+            let prb_start = self.coreset0_config.rb_offset;
+            let prb_length = 12; // Typical allocation for SIB1
+            let tbs_bytes = 100; // Typical SIB1 size
+            
             schedule.sib1_info = Some(Sib1ScheduleInfo {
                 coreset0: self.coreset0_config.clone(),
                 pdsch_time_alloc: PdschTimeAlloc {
                     start_symbol: self.coreset0_config.num_symbols as u8,  // After CORESET#0
                     num_symbols: 4,  // Typical allocation
                 },
-                payload_size: 100,  // Typical SIB1 size
+                payload_size: tbs_bytes,
+                coreset: common::CorsetConfig {
+                    start_symbol: 0,
+                    duration: self.coreset0_config.num_symbols as u8,
+                    frequency_domain_resources: (prb_start..prb_start + self.coreset0_config.num_rbs)
+                        .map(|rb| rb as u16)
+                        .collect(),
+                },
+                frequency_domain_assignment: ((prb_length * (prb_length + 1)) / 2 + prb_start) as u16,
+                time_domain_assignment: 0,  // Row 0 in time domain allocation table
+                mcs_index: 2,  // Conservative MCS for SIB1
+                aggregation_level: 4,  // AL=4 for good coverage
+                cce_index: 0,  // Start from CCE 0
+                tbs_bytes,
+                modulation: common::ModulationScheme::Qpsk,
+                prb_allocation: (prb_start..prb_start + prb_length)
+                    .map(|rb| rb as u16)
+                    .collect(),
             });
             info!("Scheduled SIB1 in frame={}, slot={}", frame, slot);
         }
@@ -182,7 +221,7 @@ impl MacScheduler {
     }
     
     /// Check if this slot should contain SSB
-    fn is_ssb_slot(&self, frame: u32, slot: u8, slots_per_frame: u32) -> bool {
+    fn is_ssb_slot(&self, frame: u32, slot: u8, _slots_per_frame: u32) -> bool {
         // SSB every 20ms (2 frames)
         let ssb_period_frames = self.ssb_period_ms / 10;
         let frame_in_period = frame % ssb_period_frames;

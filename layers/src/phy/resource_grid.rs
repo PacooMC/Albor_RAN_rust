@@ -206,8 +206,12 @@ impl ResourceGrid {
         
         info!("Mapping PSS: SSB starts at {}, PSS starts at {} (within SSB: {}), symbol={}", 
                ssb_start_sc, pss_start_sc, pss_start_within_ssb, symbol);
-        info!("PSS sequence length: {}, first few values: {:?}", 
-               pss_sequence.len(), &pss_sequence[..5.min(pss_sequence.len())]);
+        
+        // Calculate and log PSS power
+        let pss_power: f32 = pss_sequence.iter().map(|s| s.norm_sqr()).sum::<f32>() / pss_sequence.len() as f32;
+        let pss_power_db = 10.0 * pss_power.log10();
+        info!("PSS sequence: length={}, avg power={:.3} ({:.1} dB), first 5 values: {:?}", 
+               pss_sequence.len(), pss_power, pss_power_db, &pss_sequence[..5.min(pss_sequence.len())]);
         
         let mut mapped_count = 0;
         for (i, &value) in pss_sequence.iter().enumerate() {

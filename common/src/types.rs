@@ -192,6 +192,43 @@ pub struct SNssai {
     pub sd: Option<u32>,
 }
 
+/// Cell configuration
+#[derive(Debug, Clone)]
+pub struct CellConfig {
+    /// Physical cell ID
+    pub pci: u16,
+    /// Cell ID
+    pub cell_id: u16,
+    /// Bandwidth
+    pub bandwidth: Bandwidth,
+    /// Subcarrier spacing
+    pub subcarrier_spacing: SubcarrierSpacing,
+}
+
+/// CORESET configuration
+#[derive(Debug, Clone)]
+pub struct CorsetConfig {
+    /// Starting symbol index
+    pub start_symbol: u8,
+    /// Duration in symbols
+    pub duration: u8,
+    /// Frequency domain resources (list of RBs)
+    pub frequency_domain_resources: Vec<u16>,
+}
+
+/// Modulation scheme
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModulationScheme {
+    /// QPSK
+    Qpsk,
+    /// 16-QAM
+    Qam16,
+    /// 64-QAM
+    Qam64,
+    /// 256-QAM
+    Qam256,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,31 @@
+[package]
+name = "layers"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Workspace dependencies
+tokio.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+num-complex.workspace = true
+num-traits.workspace = true
+num-derive.workspace = true
+rustfft.workspace = true
+ndarray.workspace = true
+serde.workspace = true
+bincode.workspace = true
+
+# Internal crates
+common.workspace = true
+interfaces.workspace = true
+
+# Additional dependencies for protocol implementation
+bitflags = "2.6"
+nom = "7.1"  # For parsing protocol messages
+rand = "0.8"  # For scrambling sequences

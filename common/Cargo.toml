@@ -1,0 +1,18 @@
+[package]
+name = "common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Workspace dependencies
+bytes.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Additional common utilities
+bitflags = "2.6"
+num-derive = "0.4"
+num-traits = "0.2"

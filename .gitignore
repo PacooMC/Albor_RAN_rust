@@ -1,0 +1,30 @@
+# External integrations (reference implementations)
+external_integrations/srsRAN_4G/
+external_integrations/srsRAN_Project/
+
+# Build artifacts
+target/
+Cargo.lock
+
+# Logs
+logs/
+*.log
+
+# Test artifacts
+*.pcap
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Docker volumes
+.devcontainer/

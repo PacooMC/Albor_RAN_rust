@@ -1,0 +1,97 @@
+{
+    "name": "Albor Space 5G GNodeB Development",
+    "dockerFile": "../Dockerfile",
+    
+    // Use 'forwardPorts' to make a list of ports inside the container available locally
+    "forwardPorts": [
+        // ZMQ ports for GNodeB-UE communication
+        5555,
+        5556,
+        5557,
+        5558,
+        // SCTP ports for 5G interfaces
+        38412,
+        38472,
+        // Additional debugging ports
+        9229
+    ],
+    
+    // Configure tool-specific properties
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "editor.formatOnSave": true,
+                "rust-analyzer.cargo.allFeatures": true,
+                "rust-analyzer.checkOnSave.command": "clippy",
+                "rust-analyzer.inlayHints.enable": true,
+                "rust-analyzer.inlayHints.chainingHints": true,
+                "rust-analyzer.inlayHints.parameterHints": true,
+                "rust-analyzer.inlayHints.typeHints": true,
+                "files.watcherExclude": {
+                    "**/target/**": true
+                }
+            },
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "vadimcn.vscode-lldb",
+                "serayuzgur.crates",
+                "tamasfe.even-better-toml",
+                "ms-vscode.cpptools",
+                "ms-python.python",
+                "ms-vscode.hexeditor",
+                "zxh404.vscode-proto3",
+                "yzhang.markdown-all-in-one"
+            ]
+        }
+    },
+    
+    // Use 'postCreateCommand' to run commands after the container is created
+    "postCreateCommand": "rustup update && cargo --version",
+    
+    // Use 'postStartCommand' to run commands after the container starts
+    "postStartCommand": "echo 'Welcome to Albor Space 5G GNodeB Development Environment!'",
+    
+    // Mount points
+    "mounts": [
+        // Mount the project directory
+        "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+        // Mount for reference UE if available on host
+        "source=${localWorkspaceFolder}/reference-ue,target=/opt/reference-ue,type=bind,consistency=cached,optional=true"
+    ],
+    
+    // Run as non-root user
+    "remoteUser": "developer",
+    
+    // Environment variables
+    "containerEnv": {
+        "RUST_LOG": "debug",
+        "RUST_BACKTRACE": "1",
+        "CARGO_TARGET_DIR": "/workspace/target"
+    },
+    
+    // Features to add to the dev container
+    "features": {
+        "ghcr.io/devcontainers/features/git:1": {},
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": true,
+            "configureZshAsDefaultShell": false,
+            "installOhMyZsh": true,
+            "upgradePackages": true
+        }
+    },
+    
+    // Uncomment to connect as root instead
+    // "remoteUser": "root",
+    
+    // Use 'workspaceMount' to change the default mount
+    "workspaceFolder": "/workspace",
+    
+    // Configure container capabilities
+    "runArgs": [
+        "--cap-add=SYS_PTRACE",
+        "--cap-add=NET_ADMIN",
+        "--security-opt", "seccomp=unconfined",
+        "--network=host"
+    ]
+}

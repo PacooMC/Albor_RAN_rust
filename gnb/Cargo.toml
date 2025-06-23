@@ -1,0 +1,30 @@
+[package]
+name = "gnb"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "albor_gnodeb"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace dependencies
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+# Internal crates
+common.workspace = true
+layers.workspace = true
+interfaces.workspace = true
+
+# CLI handling
+clap = { version = "4.5", features = ["derive"] }
+
+# Configuration
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"

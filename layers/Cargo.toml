@@ -30,3 +30,8 @@ bitflags = "2.6"
 nom = "7.1"  # For parsing protocol messages
 rand = "0.8"  # For scrambling sequences
 fftw.workspace = true  # For high-performance FFT operations
+
+# SCTP support for NGAP
+# Using tokio for async networking with raw socket support
+libc = "0.2"  # For SCTP raw socket support
+sctp-rs = "0.3.1"  # Modern SCTP socket bindings

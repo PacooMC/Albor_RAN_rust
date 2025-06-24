@@ -13,48 +13,26 @@ use common::types::{Pci, CellId, Bandwidth, SubcarrierSpacing};
 use interfaces::zmq_rf::ZmqRfConfig;
 use layers::phy::{EnhancedPhyLayer, PhyConfig, CyclicPrefix, DuplexMode};
 use layers::mac::{EnhancedMacLayer, MacConfig, default_sib1_config};
+use layers::rrc::{RrcLayer, RrcConfig, RrcMacInterface};
+use layers::ngap::{NgapLayer, NgapConfig};
 use layers::ProtocolLayer;
+use std::net::SocketAddr;
+use std::str::FromStr;
+
+mod config;
+use config::GnbConfig;
 
 /// Albor Space 5G GNodeB
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Path to configuration file
-    #[arg(short, long, default_value = "config.toml")]
+    /// Path to YAML configuration file
+    #[arg(short, long)]
     config: String,
 
-    /// Log level (trace, debug, info, warn, error)
-    #[arg(short, long, default_value = "info")]
-    log_level: String,
-    
-    /// Physical Cell ID (0-1007)
-    #[arg(long, default_value = "0")]
-    pci: u16,
-    
-    /// Cell ID
-    #[arg(long, default_value = "1")]
-    cell_id: u16,
-    
-    /// Carrier frequency in MHz
-    #[arg(long, default_value = "1842.5")]  // Band 3 FDD, DL ARFCN 368500
-    frequency_mhz: f64,
-    
-    /// Bandwidth in MHz (5, 10, 15, 20, 25, 30, 40, 50, 60, 80, 100)
-    #[arg(long, default_value = "10")]
-    bandwidth_mhz: u32,
-    
-    /// Subcarrier spacing in kHz (15, 30, 60, 120, 240)
-    #[arg(long, default_value = "15")]  // 15 kHz for FDD band 3
-    scs_khz: u32,
-    
-    /// ZMQ device arguments (e.g., "tx_port=tcp://*:2000,rx_port=tcp://localhost:2001,base_srate=23.04e6")
-    #[arg(long, default_value = "tx_port=tcp://*:2000,rx_port=tcp://localhost:2001,base_srate=23.04e6")]  // 23.04 MHz for band 3 FDD
-    device_args: String,
-    
-    /// Number of channels
-    #[arg(long, default_value = "1")]
-    num_channels: usize,
-    
+    /// Log level override (trace, debug, info, warn, error)
+    #[arg(short, long)]
+    log_level: Option<String>,
 }
 
 
@@ -62,6 +40,8 @@ struct Args {
 struct GnbState {
     phy_layer: Arc<RwLock<EnhancedPhyLayer>>,
     mac_layer: Arc<EnhancedMacLayer>,
+    rrc_layer: Arc<RwLock<RrcLayer>>,
+    ngap_layer: Arc<RwLock<NgapLayer>>,
     running: Arc<RwLock<bool>>,
 }
 
@@ -69,9 +49,15 @@ struct GnbState {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logging
+    // Load YAML configuration
+    info!("Loading configuration from: {}", args.config);
+    let config = GnbConfig::from_yaml_file(&args.config)?;
+    
+    // Initialize logging with level from config or override
+    let log_level = args.log_level.as_ref()
+        .unwrap_or(&config.log.all_level);
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&args.log_level));
+        .unwrap_or_else(|_| EnvFilter::new(log_level));
     
     fmt()
         .with_env_filter(env_filter)
@@ -81,15 +67,15 @@ async fn main() -> Result<()> {
         .init();
 
     info!("Starting Albor Space 5G GNodeB");
-    info!("Configuration file: {}", args.config);
+    info!("Configuration loaded from: {}", args.config);
     
-    // Validate and create configuration
-    let pci = Pci::new(args.pci)
-        .ok_or_else(|| anyhow::anyhow!("Invalid PCI: {}", args.pci))?;
+    // Extract and validate configuration parameters
+    let pci = Pci::new(config.cell_cfg.pci)
+        .ok_or_else(|| anyhow::anyhow!("Invalid PCI: {}", config.cell_cfg.pci))?;
     
-    let cell_id = CellId(args.cell_id);
+    let cell_id = CellId(config.cell_cfg.pci); // Using PCI as cell ID for now
     
-    let bandwidth = match args.bandwidth_mhz {
+    let bandwidth = match config.cell_cfg.channel_bandwidth_mhz {
         5 => Bandwidth::Bw5,
         10 => Bandwidth::Bw10,
         15 => Bandwidth::Bw15,
@@ -101,31 +87,65 @@ async fn main() -> Result<()> {
         60 => Bandwidth::Bw60,
         80 => Bandwidth::Bw80,
         100 => Bandwidth::Bw100,
-        _ => return Err(anyhow::anyhow!("Invalid bandwidth: {} MHz", args.bandwidth_mhz)),
+        _ => return Err(anyhow::anyhow!("Invalid bandwidth: {} MHz", config.cell_cfg.channel_bandwidth_mhz)),
     };
     
-    let scs = match args.scs_khz {
+    let scs = match config.cell_cfg.common_scs {
         15 => SubcarrierSpacing::Scs15,
         30 => SubcarrierSpacing::Scs30,
         60 => SubcarrierSpacing::Scs60,
         120 => SubcarrierSpacing::Scs120,
         240 => SubcarrierSpacing::Scs240,
-        _ => return Err(anyhow::anyhow!("Invalid subcarrier spacing: {} kHz", args.scs_khz)),
+        _ => return Err(anyhow::anyhow!("Invalid subcarrier spacing: {} kHz", config.cell_cfg.common_scs)),
     };
+    
+    // Calculate carrier frequency from ARFCN (Band 3 specific)
+    let carrier_frequency = calculate_frequency_from_arfcn(config.cell_cfg.dl_arfcn, config.cell_cfg.band)?;
     
     info!("Cell configuration:");
     info!("  PCI: {}", pci.0);
     info!("  Cell ID: {}", cell_id.0);
-    info!("  Frequency: {} MHz", args.frequency_mhz);
-    info!("  Bandwidth: {} MHz", args.bandwidth_mhz);
-    info!("  Subcarrier spacing: {} kHz", args.scs_khz);
+    info!("  Band: {}", config.cell_cfg.band);
+    info!("  DL ARFCN: {}", config.cell_cfg.dl_arfcn);
+    info!("  Frequency: {} MHz", carrier_frequency / 1e6);
+    info!("  Bandwidth: {} MHz", config.cell_cfg.channel_bandwidth_mhz);
+    info!("  Subcarrier spacing: {} kHz", config.cell_cfg.common_scs);
+    info!("  PLMN: {}", config.cell_cfg.plmn);
+    info!("  TAC: {}", config.cell_cfg.tac);
     info!("  PHY mode: Enhanced (full)");
+    
+    // AMF configuration
+    info!("AMF configuration:");
+    info!("  Address: {}:{}", config.cu_cp.amf.addr, config.cu_cp.amf.port);
+    info!("  Bind address: {}", config.cu_cp.amf.bind_addr);
+    
+    // Parse PLMN from config (format: "00101" -> [0x00, 0xF1, 0x10])
+    let plmn_str = &config.cell_cfg.plmn;
+    if plmn_str.len() != 5 && plmn_str.len() != 6 {
+        return Err(anyhow::anyhow!("Invalid PLMN format: {}", plmn_str));
+    }
+    
+    let mcc = &plmn_str[0..3];
+    let mnc = &plmn_str[3..];
+    
+    // Convert to BCD format for NGAP
+    let mut plmn_id = [0u8; 3];
+    plmn_id[0] = ((mcc.chars().nth(1).unwrap().to_digit(10).unwrap() as u8) << 4) | 
+                  (mcc.chars().nth(0).unwrap().to_digit(10).unwrap() as u8);
+    plmn_id[1] = ((mnc.chars().nth(0).unwrap().to_digit(10).unwrap() as u8) << 4) | 
+                  (mcc.chars().nth(2).unwrap().to_digit(10).unwrap() as u8);
+    if mnc.len() == 2 {
+        plmn_id[2] = 0xF0 | (mnc.chars().nth(1).unwrap().to_digit(10).unwrap() as u8);
+    } else {
+        plmn_id[2] = ((mnc.chars().nth(2).unwrap().to_digit(10).unwrap() as u8) << 4) | 
+                      (mnc.chars().nth(1).unwrap().to_digit(10).unwrap() as u8);
+    }
 
     // Create PHY configuration
     let phy_config = PhyConfig {
         pci,
         cell_id,
-        carrier_frequency: args.frequency_mhz * 1e6,
+        carrier_frequency,
         bandwidth,
         subcarrier_spacing: scs,
         num_tx_antennas: 1,
@@ -134,8 +154,10 @@ async fn main() -> Result<()> {
         duplex_mode: DuplexMode::Fdd,  // Band 3 is FDD
     };
     
-    // Create ZMQ RF configuration from device args
-    let zmq_config = ZmqRfConfig::from_device_args(&args.device_args, args.num_channels)?;
+    // Create ZMQ RF configuration from device args in config
+    let mut zmq_config = ZmqRfConfig::from_device_args(&config.ru_sdr.device_args, 1)?;
+    zmq_config.tx_gain = config.ru_sdr.tx_gain;
+    zmq_config.rx_gain = config.ru_sdr.rx_gain;
     
     info!("ZMQ configuration:");
     info!("  TX address: {}", zmq_config.tx_address);
@@ -153,9 +175,40 @@ async fn main() -> Result<()> {
     
     // Initialize MAC layer
     let mut mac_layer = EnhancedMacLayer::new(mac_config.clone())?;
+    
+    // Create RRC configuration
+    let rrc_config = RrcConfig {
+        sib_periodicity: 160,
+        max_ue_contexts: 100,
+        cell_id,
+        plmn_id,
+        tac: config.cell_cfg.tac,
+    };
+    
+    // Initialize RRC layer
+    let mut rrc_layer = RrcLayer::new(rrc_config);
+    
+    // Create channels between MAC and RRC
+    use bytes::Bytes;
+    let (mac_to_rrc_tx, mut mac_to_rrc_rx) = tokio::sync::mpsc::channel::<(common::types::Rnti, Bytes)>(100);
+    let (rrc_to_mac_tx, mut rrc_to_mac_rx) = tokio::sync::mpsc::channel::<(common::types::Rnti, layers::rrc::RrcMessageType, Bytes)>(100);
+    
+    // Set channel before creating Arc
+    mac_layer.set_rrc_channel(mac_to_rrc_tx);
+    
+    // Now initialize and create Arc
     mac_layer.initialize().await?;
     info!("MAC layer initialized");
     let mac_layer = Arc::new(mac_layer);
+    
+    // Set MAC interface for RRC
+    let mac_interface: Arc<dyn RrcMacInterface> = mac_layer.clone() as Arc<dyn RrcMacInterface>;
+    rrc_layer.set_mac_interface(mac_interface);
+    
+    rrc_layer.initialize().await
+        .map_err(|e| anyhow::anyhow!("Failed to initialize RRC layer: {}", e))?;
+    info!("RRC layer initialized");
+    let rrc_layer = Arc::new(RwLock::new(rrc_layer));
     
     // Initialize PHY layer
     let mut enhanced_phy = EnhancedPhyLayer::new(phy_config)?;
@@ -168,11 +221,38 @@ async fn main() -> Result<()> {
     info!("Enhanced PHY layer initialized (full mode)");
     let phy_layer = Arc::new(RwLock::new(enhanced_phy));
     
+    // Create NGAP configuration
+    let amf_addr = format!("{}:{}", config.cu_cp.amf.addr, config.cu_cp.amf.port);
+    // TEMPORARY: Override AMF address to match actual deployment (127.0.0.5:38412)
+    let amf_addr_override = "127.0.0.5:38412";
+    warn!("TEMPORARY: Overriding AMF address from {} to {}", amf_addr, amf_addr_override);
+    let ngap_config = NgapConfig {
+        amf_address: SocketAddr::from_str(amf_addr_override)
+            .map_err(|e| anyhow::anyhow!("Invalid AMF address {}: {}", amf_addr_override, e))?,
+        local_address: SocketAddr::from_str(&format!("{}:0", config.cu_cp.amf.bind_addr))
+            .map_err(|e| anyhow::anyhow!("Invalid bind address: {}", e))?,
+        gnb_id: config.cell_cfg.pci as u32, // Using PCI as gNB ID for now
+        plmn_id,
+    };
+    
+    // Initialize NGAP layer
+    let mut ngap_layer = NgapLayer::new(ngap_config);
+    match ngap_layer.initialize().await {
+        Ok(_) => info!("NGAP layer initialized and connected to AMF"),
+        Err(e) => {
+            warn!("Failed to initialize NGAP layer: {}. Continuing without AMF connection.", e);
+            warn!("Cell will broadcast but no core network connectivity.");
+        }
+    }
+    let ngap_layer = Arc::new(RwLock::new(ngap_layer));
+    
     let running = Arc::new(RwLock::new(true));
     
     let state = GnbState {
         phy_layer,
         mac_layer,
+        rrc_layer,
+        ngap_layer,
         running: running.clone(),
     };
 
@@ -185,6 +265,23 @@ async fn main() -> Result<()> {
             let phy_guard = phy.read().await;
             if let Err(e) = phy_guard.start_processing().await {
                 error!("Enhanced PHY processing error: {}", e);
+            }
+        })
+    };
+    
+    // Start RRC message processing task
+    let rrc_handle = {
+        let rrc = state.rrc_layer.clone();
+        let running = running.clone();
+        tokio::spawn(async move {
+            while *running.read().await {
+                // Process messages from MAC
+                if let Some((rnti, data)) = mac_to_rrc_rx.recv().await {
+                    let mut rrc_guard = rrc.write().await;
+                    if let Err(e) = rrc_guard.process_uplink(data).await {
+                        error!("RRC uplink processing error: {}", e);
+                    }
+                }
             }
         })
     };
@@ -225,6 +322,9 @@ async fn main() -> Result<()> {
         _ = phy_handle => {
             warn!("PHY processing stopped unexpectedly");
         }
+        _ = rrc_handle => {
+            warn!("RRC processing stopped unexpectedly");
+        }
     }
     
     // Shutdown
@@ -239,6 +339,22 @@ async fn main() -> Result<()> {
         }
     }
     
+    // Shutdown RRC layer
+    {
+        let mut rrc_guard = state.rrc_layer.write().await;
+        if let Err(e) = rrc_guard.shutdown().await {
+            error!("Error shutting down RRC: {}", e);
+        }
+    }
+    
+    // Shutdown NGAP layer
+    {
+        let mut ngap_guard = state.ngap_layer.write().await;
+        if let Err(e) = ngap_guard.shutdown().await {
+            error!("Error shutting down NGAP: {}", e);
+        }
+    }
+    
     // Wait for tasks to complete
     let _ = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
@@ -247,4 +363,23 @@ async fn main() -> Result<()> {
     
     info!("GNodeB shutdown complete");
     Ok(())
+}
+
+/// Calculate carrier frequency from ARFCN
+fn calculate_frequency_from_arfcn(arfcn: u32, band: u16) -> Result<f64> {
+    // For NR Band n3 (1800 MHz FDD)
+    // DL: 1805-1880 MHz
+    // NR-ARFCN range: 361000-376000
+    // Formula: F_REF = F_REF-Offs + ΔF_Global * (N_REF - N_REF-Offs)
+    // For Band n3: F_REF-Offs = 1805 MHz, N_REF-Offs = 361000, ΔF_Global = 5 kHz
+    match band {
+        3 => {
+            if arfcn < 361000 || arfcn > 376000 {
+                return Err(anyhow::anyhow!("Invalid NR-ARFCN {} for band n3", arfcn));
+            }
+            // NR frequency calculation for band n3
+            Ok(1805.0e6 + 5.0e3 * (arfcn - 361000) as f64)
+        }
+        _ => Err(anyhow::anyhow!("Unsupported band: {}", band))
+    }
 }

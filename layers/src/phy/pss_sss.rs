@@ -40,8 +40,8 @@ impl PssGenerator {
         
         // Default amplitude: 1.0 (0 dB) - matches srsRAN default
         // In srsRAN, PSS can be 0 dB or 3 dB higher than SSS
-        // We'll default to 3 dB for better detection
-        let amplitude = 10.0_f32.powf(3.0 / 20.0); // 3 dB = ~1.412
+        // We'll use 6 dB for better detection with ZMQ interface
+        let amplitude = 10.0_f32.powf(6.0 / 20.0); // 6 dB = ~2.0
         
         Ok(Self {
             pci,
@@ -204,13 +204,25 @@ fn generate_pss_sequence(nid2: u8) -> Vec<Complex32> {
     x[1] = 1;
     x[0] = 0;
     
+    // Log initialization state
+    info!("PSS generation for NID2={}: initial state x[6..0] = [{}, {}, {}, {}, {}, {}, {}]",
+          nid2, x[6], x[5], x[4], x[3], x[2], x[1], x[0]);
+    
     // Generate M sequence x exactly as srsRAN
     for i in 0..PSS_LENGTH {
         x[i + 7] = (x[i + 4] + x[i]) % 2;
     }
     
+    // Log first 20 m-sequence values for debugging
+    let mut m_seq_debug = String::new();
+    for i in 0..20.min(PSS_LENGTH) {
+        m_seq_debug.push_str(&format!("{}", x[i]));
+    }
+    info!("PSS m-sequence (first 20 bits): {}", m_seq_debug);
+    
     // Calculate cyclic shift M as per 3GPP TS 38.211
     let m_shift = (43 * nid2 as usize) % PSS_LENGTH;
+    info!("PSS cyclic shift M = 43 * {} mod 127 = {}", nid2, m_shift);
     
     // Generate BPSK modulated sequence with cyclic shift applied during output
     // This matches srsRAN's approach exactly
@@ -221,6 +233,16 @@ fn generate_pss_sequence(nid2: u8) -> Vec<Complex32> {
         // BPSK mapping: x=0 -> d=1, x=1 -> d=-1
         let value = amplitude * (1.0 - 2.0 * x[m] as f32);
         sequence.push(Complex32::new(value, 0.0));
+    }
+    
+    // Log first and last 10 PSS values for verification
+    info!("PSS sequence (first 10 values):");
+    for i in 0..10.min(sequence.len()) {
+        info!("  PSS[{}] = {:.3}", i, sequence[i].re);
+    }
+    info!("PSS sequence (last 10 values):");
+    for i in (sequence.len().saturating_sub(10))..sequence.len() {
+        info!("  PSS[{}] = {:.3}", i, sequence[i].re);
     }
     
     sequence
@@ -273,10 +295,20 @@ fn generate_sss_base_sequences() -> (Vec<f32>, Vec<f32>) {
     x0[1] = 0;
     x0[0] = 1;
     
+    info!("SSS x0 initial state: [{}, {}, {}, {}, {}, {}, {}]", 
+          x0[6], x0[5], x0[4], x0[3], x0[2], x0[1], x0[0]);
+    
     // Generate M sequence x0 with polynomial x^7 + x^4 + 1
     for i in 0..SSS_LENGTH {
         x0[i + 7] = (x0[i + 4] + x0[i]) % 2;
     }
+    
+    // Log first 20 x0 sequence values
+    let mut x0_debug = String::new();
+    for i in 0..20.min(SSS_LENGTH) {
+        x0_debug.push_str(&format!("{}", x0[i]));
+    }
+    info!("SSS x0 sequence (first 20 bits): {}", x0_debug);
     
     // Modulate M sequence to create d0
     for i in 0..SSS_LENGTH {
@@ -293,10 +325,20 @@ fn generate_sss_base_sequences() -> (Vec<f32>, Vec<f32>) {
     x1[1] = 0;
     x1[0] = 1;
     
+    info!("SSS x1 initial state: [{}, {}, {}, {}, {}, {}, {}]", 
+          x1[6], x1[5], x1[4], x1[3], x1[2], x1[1], x1[0]);
+    
     // Generate M sequence x1 with polynomial x^7 + x + 1
     for i in 0..SSS_LENGTH {
         x1[i + 7] = (x1[i + 1] + x1[i]) % 2;
     }
+    
+    // Log first 20 x1 sequence values
+    let mut x1_debug = String::new();
+    for i in 0..20.min(SSS_LENGTH) {
+        x1_debug.push_str(&format!("{}", x1[i]));
+    }
+    info!("SSS x1 sequence (first 20 bits): {}", x1_debug);
     
     // Modulate M sequence to create d1
     for i in 0..SSS_LENGTH {

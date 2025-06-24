@@ -6,15 +6,43 @@ pub mod scheduler;
 pub mod sib1;
 
 use crate::{LayerError, ProtocolLayer};
+use crate::rrc::{RrcMacInterface, RrcMessageType, RarGrant};
 use async_trait::async_trait;
-use bytes::Bytes;
-use tracing::{debug, info};
+use bytes::{Bytes, BytesMut, BufMut};
+use tracing::{debug, info, warn, error};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use std::sync::atomic::{AtomicU16, Ordering};
+use tokio::sync::{Mutex, RwLock, mpsc};
 
 pub use scheduler::{MacScheduler, SlotSchedule, SsbScheduleInfo, Sib1ScheduleInfo};
 pub use sib1::{Sib1Generator, Sib1Config, default_sib1_config};
-use common::types::{CellId, SubcarrierSpacing, Bandwidth};
+use common::types::{CellId, SubcarrierSpacing, Bandwidth, Rnti};
+
+/// MAC PDU types
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MacPduType {
+    /// Random Access Response
+    Rar,
+    /// Uplink/Downlink data
+    Data,
+    /// Broadcast (SI-RNTI)
+    Broadcast,
+}
+
+/// Random Access procedure state
+#[derive(Debug)]
+struct RandomAccessProcedure {
+    /// Temporary C-RNTI allocated
+    tc_rnti: Rnti,
+    /// Timing advance
+    timing_advance: u16,
+    /// Frame where PRACH was detected
+    prach_frame: u32,
+    /// Slot where PRACH was detected
+    prach_slot: u8,
+    /// Preamble index
+    preamble_index: u8,
+}
 
 /// MAC layer configuration
 #[derive(Debug, Clone)]
@@ -51,6 +79,12 @@ pub struct EnhancedMacLayer {
     sib1_generator: Arc<Sib1Generator>,
     sib1_payload: Arc<RwLock<Option<Bytes>>>,
     initialized: bool,
+    /// Next C-RNTI to allocate
+    next_c_rnti: Arc<AtomicU16>,
+    /// Ongoing Random Access procedures
+    ra_procedures: Arc<Mutex<Vec<RandomAccessProcedure>>>,
+    /// RRC message sender
+    rrc_tx: Option<mpsc::Sender<(Rnti, Bytes)>>,
 }
 
 impl EnhancedMacLayer {
@@ -70,7 +104,61 @@ impl EnhancedMacLayer {
             sib1_generator: Arc::new(sib1_generator),
             sib1_payload: Arc::new(RwLock::new(None)),
             initialized: false,
+            next_c_rnti: Arc::new(AtomicU16::new(0x4601)), // Start C-RNTI allocation
+            ra_procedures: Arc::new(Mutex::new(Vec::new())),
+            rrc_tx: None,
         })
+    }
+    
+    /// Set RRC message channel
+    pub fn set_rrc_channel(&mut self, tx: mpsc::Sender<(Rnti, Bytes)>) {
+        self.rrc_tx = Some(tx);
+    }
+    
+    /// Generate Random Access Response
+    fn generate_rar(&self, tc_rnti: Rnti, timing_advance: u16) -> Bytes {
+        let mut buf = BytesMut::new();
+        
+        // MAC subheader (E/T/RAPID)
+        buf.put_u8(0x40); // E=0, T=1, RAPID=0
+        
+        // MAC RAR (7 bytes)
+        // Timing Advance Command (12 bits)
+        let ta_high = ((timing_advance >> 4) & 0xFF) as u8;
+        let ta_low = ((timing_advance & 0x0F) << 4) as u8;
+        
+        buf.put_u8(ta_high);
+        
+        // UL Grant (20 bits) - simplified
+        buf.put_u8(ta_low | 0x0F); // TA low + grant high
+        buf.put_u16(0xFFFF); // Rest of grant
+        
+        // Temporary C-RNTI
+        buf.put_u16(tc_rnti.0);
+        
+        buf.freeze()
+    }
+    
+    /// Process Msg3 (contains RRC Setup Request)
+    async fn process_msg3(&self, tc_rnti: Rnti, data: Bytes) -> Result<(), LayerError> {
+        info!("Processing Msg3 from TC-RNTI {}: {} bytes", tc_rnti.0, data.len());
+        
+        // Extract RRC message from MAC PDU
+        // In real implementation, would parse MAC header
+        // For now, assume entire payload is RRC message
+        
+        if let Some(rrc_tx) = &self.rrc_tx {
+            // Forward to RRC layer
+            if let Err(e) = rrc_tx.send((tc_rnti, data)).await {
+                error!("Failed to send message to RRC: {}", e);
+                return Err(LayerError::ProcessingError("RRC channel error".into()));
+            }
+            info!("Forwarded Msg3 to RRC layer");
+        } else {
+            warn!("No RRC channel configured");
+        }
+        
+        Ok(())
     }
 }
 
@@ -100,11 +188,17 @@ impl ProtocolLayer for EnhancedMacLayer {
         
         debug!("MAC processing uplink data: {} bytes", data.len());
         
-        // TODO: Implement MAC uplink processing
-        // - Demultiplex MAC PDUs
-        // - Process MAC control elements (BSR, PHR, etc.)
-        // - Handle Random Access procedures
-        // - Forward to appropriate logical channels
+        // Check if this is Msg3 from a Random Access procedure
+        // In real implementation, this would be indicated by PHY
+        let ra_procs = self.ra_procedures.lock().await;
+        if !ra_procs.is_empty() {
+            // Assume this is Msg3 from the first RA procedure
+            let tc_rnti = ra_procs[0].tc_rnti;
+            drop(ra_procs);
+            
+            // Process as Msg3
+            self.process_msg3(tc_rnti, data.clone()).await?;
+        }
         
         Ok(data)
     }
@@ -170,10 +264,26 @@ impl MacPhyInterface for EnhancedMacLayer {
                   preamble.detection_metric,
                   preamble.power_dbm);
             
-            // TODO: Initiate Random Access procedure
+            // Initiate Random Access procedure
             // 1. Allocate TC-RNTI for the UE
-            // 2. Schedule Random Access Response (RAR)
-            // 3. Prepare Msg2 with timing advance command
+            let tc_rnti = Rnti::new(self.next_c_rnti.fetch_add(1, Ordering::SeqCst));
+            
+            // 2. Create RA procedure state
+            let ra_proc = RandomAccessProcedure {
+                tc_rnti,
+                timing_advance: (preamble.timing_advance_us * 16.0) as u16, // Convert to TA command units
+                prach_frame: detection.frame,
+                prach_slot: detection.slot,
+                preamble_index: preamble.preamble_index,
+            };
+            
+            let mut ra_procs = self.ra_procedures.lock().await;
+            ra_procs.push(ra_proc);
+            drop(ra_procs);
+            
+            // 3. Schedule Random Access Response (RAR) 
+            // RAR window starts at PRACH + 3 slots
+            info!("Scheduled RAR for TC-RNTI {} with TA={}", tc_rnti.0, preamble.timing_advance_us);
         }
         
         Ok(())
@@ -198,6 +308,53 @@ pub struct MacSdu {
     pub data: Bytes,
 }
 
+#[async_trait]
+impl RrcMacInterface for EnhancedMacLayer {
+    async fn send_rrc_message(&self, rnti: Rnti, msg_type: RrcMessageType, data: Bytes) -> Result<(), LayerError> {
+        if !self.initialized {
+            return Err(LayerError::NotInitialized);
+        }
+        
+        info!("MAC: Sending RRC message type {:?} to RNTI {}, size: {} bytes", 
+              msg_type, rnti.0, data.len());
+        
+        // TODO: Schedule transmission in next available slot
+        // For now, just log
+        match msg_type {
+            RrcMessageType::RrcSetup => {
+                info!("Scheduling RRC Setup (Msg4) for RNTI {}", rnti.0);
+            }
+            _ => {
+                debug!("Scheduling RRC message type {:?}", msg_type);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    async fn allocate_c_rnti(&self) -> Result<Rnti, LayerError> {
+        let rnti_value = self.next_c_rnti.fetch_add(1, Ordering::SeqCst);
+        Ok(Rnti::new(rnti_value))
+    }
+    
+    async fn schedule_rar(&self, tc_rnti: Rnti, grant: RarGrant) -> Result<(), LayerError> {
+        if !self.initialized {
+            return Err(LayerError::NotInitialized);
+        }
+        
+        info!("MAC: Scheduling RAR for TC-RNTI {}, TA={}", tc_rnti.0, grant.timing_advance);
+        
+        // Generate RAR PDU
+        let rar_pdu = self.generate_rar(tc_rnti, grant.timing_advance);
+        
+        // TODO: Actually schedule in next slot
+        // For now, just log
+        info!("Generated RAR PDU: {} bytes", rar_pdu.len());
+        
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,7 +364,7 @@ mod tests {
         let config = MacConfig {
             cell_id: CellId(1),
             scs: SubcarrierSpacing::Scs15,
-            bandwidth: Bandwidth::Bw20,
+            bandwidth: Bandwidth::Bw10,
             max_ues: 32,
             sib1_config: default_sib1_config(CellId(1)),
         };
@@ -222,5 +379,10 @@ mod tests {
         // Test getting SIB1 payload
         let sib1 = mac.get_sib1_payload().await.unwrap();
         assert!(sib1.len() >= 100);
+        
+        // Test C-RNTI allocation
+        let rnti1 = mac.allocate_c_rnti().await.unwrap();
+        let rnti2 = mac.allocate_c_rnti().await.unwrap();
+        assert_ne!(rnti1.0, rnti2.0);
     }
 }

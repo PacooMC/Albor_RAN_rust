@@ -210,10 +210,11 @@ impl EnhancedPhyLayer {
             config.subcarrier_spacing,
         )?;
         
-        // Create synchronization signal generators with higher amplitude for better detection
-        // Use 20 dB gain for PSS to ensure UE can detect it during cell search
-        let pss_generator = PssGenerator::new_with_amplitude_db(config.pci, 20.0)?;
-        let sss_generator = SssGenerator::new(config.pci)?;
+        // Create synchronization signal generators with proper amplitude
+        // PSS should be higher than SSS for better detection
+        // Using 6 dB for PSS with ZMQ interface for better cell detection
+        let pss_generator = PssGenerator::new_with_amplitude_db(config.pci, 6.0)?;
+        let sss_generator = SssGenerator::new(config.pci)?;  // 0 dB (amplitude = 1.0)
         
         // Create PBCH processor
         let pbch_processor = PbchProcessor::new(config.pci, config.cell_id)?;
@@ -413,9 +414,15 @@ impl EnhancedPhyLayer {
                         .map(|ssb| symbol >= ssb.start_symbol && symbol < ssb.start_symbol + 4) // SSB spans 4 symbols
                         .unwrap_or_else(|| frame_structure.is_sync_symbol(frame, slot, symbol));
                     
+                    // Log SSB transmission opportunity every 20ms (when we start a new SSB period)
+                    if frame % 2 == 0 && slot == 0 && symbol == 0 {
+                        info!("SSB transmission period starting at frame={}", frame);
+                    }
+                    
                     if should_send_ssb {
                         // OPTIMIZATION: Using pre-computed PSS sequence
                         if frame_structure.is_pss_symbol(symbol) {
+                            debug!("Mapping PSS to resource grid at frame={}, slot={}, symbol={}", frame, slot, symbol);
                             {
                                 let mut grid = resource_grid.lock().await;
                                 let _ = grid.map_pss(symbol, &pss_sequence);
@@ -424,6 +431,7 @@ impl EnhancedPhyLayer {
                         
                         // OPTIMIZATION: Using pre-computed SSS sequences
                         if frame_structure.is_sss_symbol(symbol) {
+                            debug!("Mapping SSS to resource grid at frame={}, slot={}, symbol={}", frame, slot, symbol);
                             let sss_symbols = if frame % 2 == 0 {
                                 &sss_sequence_even
                             } else {
@@ -441,8 +449,15 @@ impl EnhancedPhyLayer {
                         .and_then(|s| s.ssb_info.as_ref())
                         .map(|_ssb| frame_structure.is_pbch_symbol(frame, slot, symbol))
                         .unwrap_or_else(|| frame_structure.is_pbch_symbol(frame, slot, symbol));
+                    
+                    // Debug logging for PBCH
+                    if frame_structure.is_sync_slot(frame, slot) && (symbol == 1 || symbol == 3) {
+                        debug!("PBCH check: frame={}, slot={}, symbol={}, should_send_pbch={}", 
+                               frame, slot, symbol, should_send_pbch);
+                    }
                         
                     if should_send_pbch {
+                        info!("Mapping PBCH to resource grid at frame={}, slot={}, symbol={}", frame, slot, symbol);
                         let mib = pbch_processor.generate_mib(frame);
                         let pbch_symbols = pbch_processor.encode_pbch(&mib, frame);
                         {
@@ -541,6 +556,22 @@ impl EnhancedPhyLayer {
                         let mut samples = ofdm_modulator.modulate(&*grid, symbol);
                         // Ensure correct number of samples
                         samples.resize(samples_per_symbol, num_complex::Complex32::new(0.0, 0.0));
+                        
+                        // Debug: Log signal power when transmitting SSB
+                        if should_send_ssb && symbol == 0 {  // PSS symbol
+                            let power: f32 = samples.iter().map(|s| s.norm_sqr()).sum::<f32>() / samples.len() as f32;
+                            let power_db = 10.0 * power.log10();
+                            info!("PSS signal power: {:.2} dB, RMS: {:.4}, samples: {}", 
+                                  power_db, power.sqrt(), samples.len());
+                            
+                            // Log first few IQ samples
+                            info!("First 10 IQ samples after OFDM:");
+                            for (i, sample) in samples.iter().take(10).enumerate() {
+                                info!("  [{}] = {:.6} + {:.6}j (mag: {:.6})", 
+                                      i, sample.re, sample.im, sample.norm());
+                            }
+                        }
+                        
                         samples
                     };
                     

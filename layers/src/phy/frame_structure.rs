@@ -120,9 +120,10 @@ impl FrameStructure {
         let ssb_period_frames = 2; // 20ms period = 2 frames
         let frame_in_period = frame % ssb_period_frames;
         
-        // Transmit SSB in first frame of the period, slot 0
-        // According to 3GPP, SSB can be in slots 0,1,2,3 for Case A
-        frame_in_period == 0 && slot == 0
+        // For band 3 (< 3 GHz), this is Case A
+        // SSB can be transmitted in slots 0, 1, 2, 3 within the SSB period
+        // We'll transmit SSB in all 4 slots for better detection
+        frame_in_period == 0 && slot < 4
     }
     
     /// Check if this is a synchronization symbol
@@ -310,8 +311,12 @@ mod tests {
         
         // Test sync detection
         assert!(fs.is_sync_slot(0, 0));
-        assert!(fs.is_sync_slot(0, 10));
+        assert!(fs.is_sync_slot(0, 1));
+        assert!(fs.is_sync_slot(0, 2));
+        assert!(fs.is_sync_slot(0, 3));
+        assert!(!fs.is_sync_slot(0, 4));
         assert!(!fs.is_sync_slot(0, 5));
+        assert!(!fs.is_sync_slot(1, 0)); // Frame 1 should not have SSB
         
         assert!(fs.is_pss_symbol(0));
         assert!(fs.is_sss_symbol(2));

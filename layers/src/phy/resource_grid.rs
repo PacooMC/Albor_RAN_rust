@@ -210,7 +210,20 @@ impl ResourceGrid {
         let pss_start_within_ssb = 56;  // PSS starts at subcarrier 56 within SSB
         let pss_start_sc = ssb_start_sc + pss_start_within_ssb;
         
-        // OPTIMIZATION: Removed logging from hot path
+        info!("Mapping PSS to resource grid:");
+        info!("  SSB starts at subcarrier: {}", ssb_start_sc);
+        info!("  PSS starts within SSB at: {}", pss_start_within_ssb);
+        info!("  PSS absolute start subcarrier: {}", pss_start_sc);
+        info!("  PSS ends at subcarrier: {}", pss_start_sc + 126);
+        info!("  Symbol: {}", symbol);
+        
+        // Log first few PSS values being mapped
+        info!("First 5 PSS values being mapped:");
+        for i in 0..5.min(pss_sequence.len()) {
+            info!("  PSS[{}] = {:.3} + {:.3}j -> subcarrier {}", 
+                  i, pss_sequence[i].re, pss_sequence[i].im, pss_start_sc + i as i16);
+        }
+        
         let mut mapped_count = 0;
         for (i, &value) in pss_sequence.iter().enumerate() {
             let sc = pss_start_sc + i as i16;
@@ -225,7 +238,7 @@ impl ResourceGrid {
             self.grid[(fft_index, symbol as usize)] = value;
             mapped_count += 1;
         }
-        // PSS mapping complete
+        info!("PSS mapping complete: {} subcarriers mapped", mapped_count);
         
         Ok(())
     }
@@ -311,7 +324,16 @@ impl ResourceGrid {
             return vec![Complex32::new(0.0, 0.0); self.fft_size];
         }
         
-        self.grid.column(symbol as usize).to_vec()
+        let samples = self.grid.column(symbol as usize).to_vec();
+        
+        // Debug: count non-zero samples
+        let non_zero_count = samples.iter().filter(|s| s.norm_sqr() > 0.0).count();
+        if non_zero_count > 0 {
+            debug!("Resource grid symbol {}: {} non-zero subcarriers out of {}", 
+                   symbol, non_zero_count, self.fft_size);
+        }
+        
+        samples
     }
     
     /// Get symbol data as a slice view (no copy)

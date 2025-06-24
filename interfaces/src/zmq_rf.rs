@@ -827,10 +827,9 @@ impl AsyncZmqRf {
         // Start worker task for TX/RX processing (srsRAN-compatible continuous loop)
         let cmd_tx = command_tx.clone();
         let worker_handle = tokio::spawn(async move {
-            info!("ZMQ worker thread started, waiting 2 seconds for UE initialization...");
-            // Give the UE time to initialize before starting RX
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            info!("ZMQ worker thread: Starting TX/RX processing loop");
+            info!("ZMQ worker thread started, starting TX/RX processing immediately");
+            // Start processing immediately to avoid dropping SSB samples
+            // The UE will connect when ready
             
             let mut next_rx_time = Instant::now();
             let rx_period = Duration::from_millis(10); // Only attempt RX every 10ms

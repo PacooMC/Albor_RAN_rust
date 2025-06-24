@@ -15,6 +15,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+bytes.workspace = true
 
 # Internal crates
 common.workspace = true
@@ -27,4 +28,5 @@ clap = { version = "4.5", features = ["derive"] }
 # Configuration
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
 toml = "0.8"

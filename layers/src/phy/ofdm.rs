@@ -64,7 +64,8 @@ impl OfdmModulator {
         let bw_rb = 52; // Default 10 MHz for 15 kHz SCS
         
         // Calculate baseband gain following srsRAN approach
-        let baseband_backoff_db = 12.0;
+        // Note: We need stronger signal for ZMQ interface to work properly
+        let baseband_backoff_db = 6.0;  // Reduced backoff for stronger signal
         let power_db = 10.0 * (bw_rb as f32 * 12.0).log10();
         let baseband_gain_db = -power_db - baseband_backoff_db;
         
@@ -169,9 +170,12 @@ impl OfdmModulator {
     pub fn configure_bandwidth(&mut self, bw_rb: usize, baseband_backoff_db: f32) {
         self.bw_rb = bw_rb;
         // Update baseband gain following srsRAN formula
+        // Using reduced backoff for stronger signal with ZMQ
+        let actual_backoff = baseband_backoff_db.min(6.0);  // Cap at 6 dB for ZMQ
         let power_db = 10.0 * (bw_rb as f32 * 12.0).log10();
-        self.baseband_gain_db = -power_db - baseband_backoff_db;
-        debug!("Configured OFDM modulator: bw_rb={}, baseband_gain_db={:.1}", bw_rb, self.baseband_gain_db);
+        self.baseband_gain_db = -power_db - actual_backoff;
+        debug!("Configured OFDM modulator: bw_rb={}, baseband_gain_db={:.1} (backoff={:.1}dB)", 
+               bw_rb, self.baseband_gain_db, actual_backoff);
     }
     
     /// Apply phase compensation for carrier frequency offset

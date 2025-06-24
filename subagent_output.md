@@ -1,49 +1,75 @@
-# Subagent Task Completion Summary
+# Cell Detection Debug Session Summary
 
-## Task: Create Albor gNodeB configuration and update documentation
+## Current Status
+The UE cannot detect the Albor gNodeB cell despite all components appearing to work correctly.
 
-### Completed Actions:
+## What's Working
+1. **ZMQ Interface**: Successfully established bidirectional communication
+   - gNodeB binds to TX port 2000, RX port 2001
+   - UE connects and sends/receives samples
+   - No ZMQ errors
 
-1. **Created Albor Configuration Directory**
-   - Created `/workspace/config/albor_gnb/` directory
-   - This will hold all Albor-specific configurations
+2. **SSB Transmission**: All components transmitted correctly
+   - PSS: Generated with correct m-sequence, amplitude 2.0 (6 dB)
+   - SSS: Generated with correct sequences
+   - PBCH: Encoded with MIB data
+   - DMRS: Added to PBCH symbols 1 and 3 (v=1 for cell_id=1)
 
-2. **Copied Sacred Configuration**
-   - Source: `/workspace/config/srsran_gnb/gnb_zmq_10mhz.yml`
-   - Destination: `/workspace/config/albor_gnb/gnb_albor.yml`
-   - Created EXACT copy of the proven working configuration
-   - This configuration achieved RRC connection and is SACRED
+3. **Timing**: SSB transmitted every 20ms as expected
+   - Frame structure correct
+   - Symbol timing accurate
 
-3. **Updated CLAUDE.md - Sacred Configuration Rules**
-   - Added `gnb_albor.yml` to the list of SACRED files that must never be modified
-   - Added new configuration commandments:
-     - Albor gNodeB MUST use gnb_albor.yml
-     - We accept EXACTLY the same YAML format as srsRAN
-     - Configuration is our SPECIFICATION
-     - Source code adapts to configuration, NEVER the reverse
+4. **Signal Power**: Improved from -15.93 dB to -6.93 dB
+   - IQ samples have reasonable magnitudes (~0.4)
+   - Baseband gain adjusted for stronger signal
 
-4. **Added Implementation Philosophy Section to CLAUDE.md**
-   - Created new section: "ALBOR IMPLEMENTATION PHILOSOPHY"
-   - Core principles documented:
-     - We replicate srsRAN behavior EXACTLY
-     - Configuration format compatibility is MANDATORY
-     - The working configuration is our SPECIFICATION
-     - Source code adapts to configuration
-     - We are REPLICATING in Rust, not reinventing
+## Critical Finding
+**The reference srsRAN gNodeB also fails with the same configuration**, suggesting the issue is not specific to our implementation.
 
-5. **Updated test_albor.sh**
-   - Changed from command-line arguments to configuration file approach
-   - Now uses: `-c /workspace/config/albor_gnb/gnb_albor.yml`
-   - Also updated to use sacred UE config: `ue_nr_zmq_10mhz.conf`
-   - Ensures consistency with proven working configurations
+## Root Cause Analysis
+The most likely issue is **SSB frequency placement**. In 5G NR:
+- The SSB is not necessarily at the carrier center frequency
+- There's a concept of "pointA" (reference frequency)
+- SSB has an offset from pointA (k_SSB parameter)
+- Our implementation places SSB centered at DC (0 Hz offset)
 
-### Key Points:
+## Missing Implementation
+1. **SSB Subcarrier Offset (k_SSB)**:
+   - Not configured in YAML
+   - Not implemented in our code
+   - Critical for UE to find the SSB
 
-- **Configuration Sanctity**: The gnb_albor.yml is an EXACT copy of the proven working configuration
-- **YAML Compatibility**: Albor must accept the same YAML format as srsRAN for seamless migration
-- **Implementation Philosophy**: Code adapts to configuration, never modify the sacred configs
-- **Test Integration**: test_albor.sh now uses the proper configuration files
+2. **Point A Calculation**:
+   - Need to calculate the correct frequency offset
+   - SSB should be placed at specific GSCN frequencies
 
-### Result:
+## Recommended Fix
+1. Add SSB offset calculation based on:
+   - ARFCN (368500)
+   - Band (3)
+   - Bandwidth (10 MHz)
 
-All tasks completed successfully. The Albor gNodeB now has its own configuration directory with the sacred configuration file, CLAUDE.md has been updated with strict rules about configuration handling and implementation philosophy, and test_albor.sh has been updated to use these configurations properly.
+2. Implement k_SSB parameter:
+   - Read from config if provided
+   - Calculate automatically if not
+   - Apply offset when mapping SSB to resource grid
+
+3. Update resource grid mapping:
+   ```rust
+   // Instead of centering at DC:
+   let ssb_start_sc = -(240 / 2) as i16;
+   
+   // Apply k_SSB offset:
+   let ssb_start_sc = -(240 / 2) as i16 + k_ssb;
+   ```
+
+## Test Results
+- Signal is being transmitted
+- ZMQ communication working
+- But UE cannot find cell at expected frequency
+- This points to frequency/offset issue
+
+## Next Steps
+1. Research correct SSB placement for Band 3, ARFCN 368500
+2. Implement k_SSB parameter support
+3. Test with corrected frequency offset

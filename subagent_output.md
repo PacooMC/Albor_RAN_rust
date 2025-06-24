@@ -1,108 +1,90 @@
-# GNodeB PSS/SSS Detection Testing Report
+# Subagent Output - 5G SA Test Results
+
+## Date: 2025-06-24
+## Task: Test complete 5G SA setup with srsRAN gNodeB and UE
 
 ## Summary
 
-Tested Albor gNodeB implementation with srsUE to understand why the UE cannot detect PSS/SSS signals. Created standalone test scripts and analyzed signal transmission.
+I attempted to test the complete 5G SA setup but encountered several challenges that prevented successful completion.
 
-### Key Findings
+## Actions Performed
 
-1. **Bandwidth Mismatch Issue**
-   - gNodeB was defaulting to 20 MHz bandwidth
-   - UE was configured for 10 MHz (52 PRBs)
-   - Fixed by passing `--bandwidth-mhz 10` parameter to gNodeB
+1. **Docker Container Setup**
+   - Started development container `albor-gnb-dev` with privileged mode for network interface creation
+   - Successfully created loopback interfaces (lo2-lo20) for network isolation
+   - Each component assigned unique IP: MongoDB (127.0.0.2), AMF (127.0.0.4), UPF (127.0.0.10), gNodeB (127.0.0.11)
 
-2. **PSS/SSS Generation Working**
-   - PSS is correctly generated with 127 subcarriers at 20 dB amplitude
-   - SSS is correctly generated and mapped
-   - PBCH with DMRS is also being mapped
-   - SSB is transmitted every 20ms as expected (frames 0, 2, 4, 6...)
+2. **Open5GS Status**
+   - Found existing Open5GS container (`albor-gnb-dev-open5gs-test`) already running
+   - MongoDB running on 127.0.0.2:27017
+   - All Open5GS services (NRF, AMF, SMF, UPF, etc.) are running as processes
+   - However, AMF is NOT listening on NGAP port 38412 (SCTP)
 
-3. **Signal Transmission Issue**
-   - PSS/SSS/PBCH are correctly mapped to resource grid with non-zero values
-   - After OFDM modulation, SSB symbols (0-3) show 1090 non-zero samples
-   - However, most transmitted symbols are all zeros
-   - Only SSB slots show non-zero samples, regular slots are empty
-
-4. **ZMQ Communication Working**
-   - Bidirectional ZMQ communication established successfully
-   - gNodeB TX port: tcp://*:2000
-   - gNodeB RX port: tcp://localhost:2001
-   - Sample rate: 23.04 MHz (correct for 10 MHz bandwidth at 15 kHz SCS)
-
-5. **UE Behavior**
-   - UE starts successfully and connects via ZMQ
-   - UE terminates quickly without performing proper cell search
-   - No "Found Cell" messages in UE logs
-   - UE may be timing out or not receiving sufficient signal power
+3. **Test Attempts**
+   - Attempted to run test_5g_final.sh but MongoDB not installed in dev container
+   - Tried test_5g_sa_loopback.sh but requires Open5GS binaries in dev container
+   - Created shared network namespace between containers for connectivity
 
 ## Technical Discoveries
 
-1. **Resource Grid Mapping**
-   - 10 MHz bandwidth uses 1024 FFT size (not 2048)
-   - PSS mapped to FFT indices 960 to 574 (wrapping around)
-   - Resource grid correctly handles negative frequency mapping
+### Critical Issue: AMF NGAP Port Not Listening
+- AMF process is running: `/opt/open5gs/bin/open5gs-amfd -c /workspace/config/open5gs_native/config/amf_fixed.yaml -D`
+- AMF SBI interface listening on 127.0.0.4:7777 (HTTP/2)
+- **AMF NGAP interface NOT listening on 127.0.0.4:38412 (SCTP)**
+- This prevents gNodeB from establishing N2 connection
 
-2. **Sample Counts**
-   - 10 MHz at 15 kHz SCS: 1090 samples per symbol (1024 FFT + 66 CP)
-   - 20 MHz at 15 kHz SCS: 1636 samples per symbol (2048 FFT + 100 CP)
+### Possible Causes:
+1. **SCTP Module**: Docker container may lack SCTP kernel module support
+2. **Container Privileges**: Even with --privileged, SCTP binding may be restricted
+3. **Configuration Issue**: AMF config shows ngap server on 127.0.0.4 but may have binding issues
 
-3. **Reference gNodeB Issues**
-   - srsRAN Project gNodeB cannot run standalone without AMF
-   - Crashes with sampling rate assertion when no_core option used
-   - Not suitable for standalone PSS/SSS testing
+### Network Configuration Status:
+- ✅ Loopback interfaces created successfully
+- ✅ MongoDB running on 127.0.0.2
+- ✅ Open5GS services running
+- ❌ AMF NGAP port 38412 not accessible
+- ❌ Cannot establish gNodeB to AMF connection
 
-## Problems Identified
+## Problems Encountered
 
-1. **Primary Issue: Signal Power/Presence**
-   - While SSB is generated, the UE is not detecting it
-   - Possible causes:
-     - Signal power too low despite 20 dB PSS amplitude
-     - Timing synchronization issues
-     - Missing continuous transmission (only SSB slots have signals)
+1. **Container Architecture Mismatch**
+   - Open5GS runs in separate container with MongoDB
+   - Development container lacks Open5GS binaries
+   - Test scripts expect single container with all components
 
-2. **Secondary Issues**
-   - Most slots/symbols are transmitted as all zeros
-   - No PDCCH/PDSCH for SIB1 (though this shouldn't prevent PSS detection)
-   - UE may expect continuous signal presence
+2. **SCTP Binding Issue**
+   - AMF cannot bind to SCTP port 38412
+   - Likely due to Docker SCTP limitations
+   - May require host network mode or special kernel modules
+
+3. **Process Permission Issues**
+   - Cannot restart AMF process (zombie processes)
+   - Container init system prevents proper process management
 
 ## Recommendations
 
-1. **Immediate Actions**
-   - Implement continuous signal transmission (not just SSB slots)
-   - Add reference signals or padding to all symbols
-   - Increase PSS/SSS power levels further
-   - Add detailed timing logs to verify sample timing
+1. **Immediate Solution**: 
+   - Use Docker host network mode: `--network host`
+   - Or run Open5GS directly on host system
+   - Or use Docker Compose with proper SCTP support
 
-2. **Debugging Steps**
-   - Capture ZMQ traffic with Wireshark to verify actual transmitted data
-   - Compare signal format with working srsRAN gNodeB transmission
-   - Add power measurement at ZMQ interface level
-   - Implement spectrum analyzer functionality
+2. **Container Restructure**:
+   - Create unified container with Open5GS + srsRAN
+   - Or use Docker Compose to properly orchestrate services
+   - Ensure SCTP kernel module loaded on host
 
-3. **Configuration Verification**
-   - Ensure CP length matches expected values (66 samples for 10 MHz)
-   - Verify subcarrier spacing and FFT size calculations
-   - Check symbol timing alignment
-
-## Created Files
-
-1. `/workspace/test_srsran_zmq_standalone.sh` - Comprehensive standalone test script
-2. `/workspace/test_srsran_zmq.sh` - Simple test script with correct bandwidth
-3. `/workspace/logs/*/gnodeb.log` - Detailed gNodeB logs showing SSB generation
-4. `/workspace/logs/*/ue.log` - UE logs showing connection but no cell detection
+3. **Alternative Test Approach**:
+   - Test with TCP-based N2 interface (if supported)
+   - Or run AMF on host and gNodeB in container
+   - Or use VMs instead of containers for full network stack
 
 ## Next Steps
 
-The primary issue appears to be that while SSB is being generated correctly, it's either not being transmitted with sufficient power/presence for the UE to detect, or there's a timing synchronization issue. The fact that most symbols are zeros suggests the UE may not be receiving a continuous enough signal to lock onto.
+To achieve successful 5G SA registration:
+1. Resolve SCTP binding issue for AMF
+2. Ensure gNodeB can connect to AMF on port 38412
+3. Then proceed with UE registration testing
 
-## Task Status
+## Final Status: **INCOMPLETE** - Blocked by AMF SCTP binding issue
 
-All requested tasks have been completed:
-- ✅ Ran gNodeB without 5G core
-- ✅ Captured detailed logs
-- ✅ Ran srsUE with maximum debugging
-- ✅ Compared parameters with documentation
-- ✅ Verified ZMQ communication
-- ✅ Analyzed PSS/SSS transmission
-
-The root cause is identified: SSB is generated but the overall signal transmission pattern may not match what the UE expects for initial cell search.
+The loopback network isolation is correctly configured, but the core issue is that AMF cannot bind to the SCTP port required for N2 interface, preventing any gNodeB connection attempts.

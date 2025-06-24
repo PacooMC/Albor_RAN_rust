@@ -1,7 +1,7 @@
 # CLAUDE.md - Albor Space 5G GNodeB Project Guidelines
 
-# ⚡⚡⚡ ULTRA THINKING ⚡⚡⚡
-# 🧠🧠🧠 ALWAYS ULTRA THINK ON EVERY DECISION 🧠🧠🧠
+# ⚡⚡⚡ ULTRATHINKING ⚡⚡⚡
+# 🧠🧠🧠 ALWAYS ULTRATHINK ON EVERY DECISION 🧠🧠🧠
 # THIS IS NOT OPTIONAL - IT IS MANDATORY!
 # THINK DEEPLY BEFORE EVERY ACTION
 # ANALYZE BEFORE IMPLEMENTING
@@ -52,7 +52,7 @@ Develop a fully operational, configurable, and dynamic 5G base station (GNodeB) 
 ## ALWAYS DO THESE - NO EXCEPTIONS!
 
 ### 🔥 CRITICAL OBLIGATIONS 🔥
-1. **ALWAYS ULTRA THINK** - Think deeply before EVERY action
+1. **ALWAYS ULTRATHINK** - Think deeply before EVERY action
 2. **ALWAYS** read progress.md before continuing any work
 3. **ALWAYS** update progress.md with significant advances
 4. **ALWAYS** use subagents for ALL development tasks
@@ -75,7 +75,7 @@ Develop a fully operational, configurable, and dynamic 5G base station (GNodeB) 
 ## MANDATORY STEP-BY-STEP PROCESS
 
 ### 📋 BEFORE SPAWNING SUBAGENT
-1. **ULTRA THINK** about the task
+1. **ULTRATHINK** about the task
 2. **READ** progress.md to understand current state
 3. **PREPARE** complete context with exhaustive details
 
@@ -85,7 +85,7 @@ Develop a fully operational, configurable, and dynamic 5G base station (GNodeB) 
 2. Detail EXACTLY what the subagent must do
 3. Include these MANDATORY reminders:
    - "FIRST read CLAUDE.md - and follow it EXACTLY"
-   - "ALWAYS ULTRA THINK on EVERY decision"
+   - "ALWAYS ULTRATHINK on EVERY decision"
    - "DO NOT create intermediate markdown files"
    - "Keep spawning agents until task is FULLY COMPLETE - NO placeholders!"
    - "ALL code and documentation must be in ENGLISH"
@@ -96,9 +96,9 @@ Develop a fully operational, configurable, and dynamic 5G base station (GNodeB) 
 ### 📝 MANDATORY SUBAGENT EXECUTION STEPS
 ```
 1. START: Read CLAUDE.md COMPLETELY
-2. ULTRA THINK: Deep analysis of the task
+2. ULTRATHINK: Deep analysis of the task
 3. PLANNING: Create detailed TODO list with TodoWrite
-4. EXECUTION: Perform tasks with ULTRA THINKING at each step
+4. EXECUTION: Perform tasks with ULTRATHINKING at each step
 5. VALIDATION: Test everything with quicktest.sh
 6. FINALIZATION: Write /subagent_output.md with:
    - Summary of actions performed and final status.
@@ -175,7 +175,7 @@ docker run -v $(pwd):/workspace --name albor-gnb-dev ...
 
 ### 🔧 Development Flow
 ```
-1. ULTRA THINK about the task
+1. ULTRATHINK about the task
 2. STUDY reference implementation in external_integrations/
 3. DESIGN Rust architecture following best practices
 4. IMPLEMENT with subagents (never directly)
@@ -257,7 +257,7 @@ docker run -v $(pwd):/workspace --name albor-gnb-dev ...
 
 To begin any work:
 1. ✅ Read this CLAUDE.md COMPLETELY
-2. ✅ ULTRA THINK about the task
+2. ✅ ULTRATHINK about the task
 3. ✅ Read progress.md for current state
 4. ✅ Check external_integrations/ for reference
 5. ✅ Use subagents for implementation
@@ -273,7 +273,7 @@ Focus on Release 16 core functionalities:
 
 # 🔴🔴🔴 FINAL CRITICAL REMINDERS 🔴🔴🔴
 
-## ⚡⚡⚡ ALWAYS ULTRA THINK ⚡⚡⚡
+## ⚡⚡⚡ ALWAYS ULTRATHINK ⚡⚡⚡
 ## 🤖🤖🤖 ALWAYS USE SUBAGENTS 🤖🤖🤖
 ## 📋📋📋 ALWAYS UPDATE progress.md 📋📋📋
 ## 🔄🔄🔄 KEEP SPAWNING UNTIL COMPLETE 🔄🔄🔄

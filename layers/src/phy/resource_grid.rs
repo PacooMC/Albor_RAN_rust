@@ -79,7 +79,7 @@ impl ResourceGrid {
         
         // Test that we can access the grid
         debug!("Testing grid access...");
-        if let Some(elem) = grid.get([0, 0]) {
+        if let Some(elem) = grid.get((0, 0)) {
             debug!("Successfully accessed grid[0, 0] = {:?}", elem);
         } else {
             error!("Failed to access grid[0, 0] after creation!");
@@ -107,45 +107,32 @@ impl ResourceGrid {
     
     /// Clear a specific symbol
     pub fn clear_symbol(&mut self, symbol: u8) {
-        if symbol < self.symbols_per_slot {
-            debug!("Clearing symbol {} (grid shape: {:?}, ndim: {})", symbol, self.grid.shape(), self.grid.ndim());
-            // Clear column by iterating through rows
-            let symbol_idx = symbol as usize;
-            debug!("Clearing symbol {}, grid dimensions: rows={}, cols={}", 
-                   symbol, self.grid.nrows(), self.grid.ncols());
-            
-            if symbol_idx >= self.grid.ncols() {
-                error!("Symbol index {} out of bounds (max {})", symbol_idx, self.grid.ncols() - 1);
-                return;
-            }
-            
-            // Clear all elements in the column
-            debug!("About to clear column, nrows={}, ncols={}", self.grid.nrows(), self.grid.ncols());
-            
-            // Try a simple test first
-            if let Some(test) = self.grid.get_mut([0, 0]) {
-                debug!("Test access to grid[0,0] succeeded");
-                *test = Complex32::new(0.0, 0.0);
-            } else {
-                error!("Test access to grid[0,0] failed!");
-                return;
-            }
-            
-            // Now clear the column
-            for row in 0..self.grid.nrows() {
-                if row == 0 || row == self.grid.nrows() - 1 {
-                    debug!("Accessing grid[{}, {}]", row, symbol_idx);
-                }
-                match self.grid.get_mut([row, symbol_idx]) {
-                    Some(elem) => *elem = Complex32::new(0.0, 0.0),
-                    None => {
-                        error!("Failed to access grid[{}, {}]", row, symbol_idx);
-                        return;
-                    }
-                }
+        if symbol >= self.symbols_per_slot {
+            warn!("Attempting to clear invalid symbol {} (max: {})", symbol, self.symbols_per_slot - 1);
+            return;
+        }
+        
+        let symbol_idx = symbol as usize;
+        
+        // Clear all elements in this column
+        if let Some(mut column) = self.grid.column_mut(symbol_idx).into_slice() {
+            for elem in column.iter_mut() {
+                *elem = Complex32::new(0.0, 0.0);
             }
         } else {
-            warn!("Attempting to clear invalid symbol {} (max: {})", symbol, self.symbols_per_slot);
+            // Fallback: iterate manually with bounds checking
+            let nrows = self.grid.nrows();
+            let ncols = self.grid.ncols();
+            
+            if symbol_idx >= ncols {
+                return;
+            }
+            
+            for row in 0..nrows {
+                if let Some(elem) = self.grid.get_mut((row, symbol_idx)) {
+                    *elem = Complex32::new(0.0, 0.0);
+                }
+            }
         }
     }
     
@@ -157,8 +144,19 @@ impl ResourceGrid {
             ));
         }
         
-        let fft_index = self.subcarrier_to_fft_index(subcarrier as i16);
-        self.grid[[fft_index, symbol as usize]] = value;
+        // Convert absolute subcarrier index to DC-relative
+        let dc_offset = self.num_subcarriers as i16 / 2;
+        let dc_relative_sc = subcarrier as i16 - dc_offset;
+        let fft_index = self.subcarrier_to_fft_index(dc_relative_sc);
+        
+        if fft_index >= self.fft_size {
+            return Err(LayerError::InvalidConfiguration(
+                format!("FFT index {} out of bounds (max {}), subcarrier={}", 
+                       fft_index, self.fft_size-1, subcarrier)
+            ));
+        }
+        
+        self.grid[(fft_index, symbol as usize)] = value;
         Ok(())
     }
     
@@ -168,8 +166,16 @@ impl ResourceGrid {
             return None;
         }
         
-        let fft_index = self.subcarrier_to_fft_index(subcarrier as i16);
-        Some(self.grid[[fft_index, symbol as usize]])
+        // Convert absolute subcarrier index to DC-relative
+        let dc_offset = self.num_subcarriers as i16 / 2;
+        let dc_relative_sc = subcarrier as i16 - dc_offset;
+        let fft_index = self.subcarrier_to_fft_index(dc_relative_sc);
+        
+        if fft_index >= self.fft_size {
+            return None;
+        }
+        
+        Some(self.grid[(fft_index, symbol as usize)])
     }
     
     /// Map resource block
@@ -204,15 +210,7 @@ impl ResourceGrid {
         let pss_start_within_ssb = 56;  // PSS starts at subcarrier 56 within SSB
         let pss_start_sc = ssb_start_sc + pss_start_within_ssb;
         
-        info!("Mapping PSS: SSB starts at {}, PSS starts at {} (within SSB: {}), symbol={}", 
-               ssb_start_sc, pss_start_sc, pss_start_within_ssb, symbol);
-        
-        // Calculate and log PSS power
-        let pss_power: f32 = pss_sequence.iter().map(|s| s.norm_sqr()).sum::<f32>() / pss_sequence.len() as f32;
-        let pss_power_db = 10.0 * pss_power.log10();
-        info!("PSS sequence: length={}, avg power={:.3} ({:.1} dB), first 5 values: {:?}", 
-               pss_sequence.len(), pss_power, pss_power_db, &pss_sequence[..5.min(pss_sequence.len())]);
-        
+        // OPTIMIZATION: Removed logging from hot path
         let mut mapped_count = 0;
         for (i, &value) in pss_sequence.iter().enumerate() {
             let sc = pss_start_sc + i as i16;
@@ -224,13 +222,10 @@ impl ResourceGrid {
                     format!("FFT index out of bounds")
                 ));
             }
-            self.grid[[fft_index, symbol as usize]] = value;
+            self.grid[(fft_index, symbol as usize)] = value;
             mapped_count += 1;
         }
-        info!("PSS mapping complete: mapped {} subcarriers, FFT range: {} to {}",
-              mapped_count, 
-              self.subcarrier_to_fft_index(pss_start_sc),
-              self.subcarrier_to_fft_index(pss_start_sc + 126));
+        // PSS mapping complete
         
         Ok(())
     }
@@ -255,7 +250,7 @@ impl ResourceGrid {
         for (i, &value) in sss_sequence.iter().enumerate() {
             let sc = sss_start_sc + i as i16;
             let fft_index = self.subcarrier_to_fft_index(sc);
-            self.grid[[fft_index, symbol as usize]] = value;
+            self.grid[(fft_index, symbol as usize)] = value;
         }
         
         Ok(())
@@ -275,7 +270,7 @@ impl ResourceGrid {
         for (i, &value) in pbch_symbols.iter().enumerate() {
             let sc = start_sc + i as i16;
             let fft_index = self.subcarrier_to_fft_index(sc);
-            self.grid[[fft_index, symbol as usize]] = value;
+            self.grid[(fft_index, symbol as usize)] = value;
         }
         
         Ok(())
@@ -300,7 +295,7 @@ impl ResourceGrid {
                 if *pos < 12 && dmrs_idx < dmrs_sequence.len() {
                     let sc = ssb_start_sc + (rb * 12 + *pos) as i16;
                     let fft_index = self.subcarrier_to_fft_index(sc);
-                    self.grid[[fft_index, symbol as usize]] = dmrs_sequence[dmrs_idx];
+                    self.grid[(fft_index, symbol as usize)] = dmrs_sequence[dmrs_idx];
                     dmrs_idx += 1;
                 }
             }
@@ -317,6 +312,15 @@ impl ResourceGrid {
         }
         
         self.grid.column(symbol as usize).to_vec()
+    }
+    
+    /// Get symbol data as a slice view (no copy)
+    pub fn get_symbol_view(&self, symbol: u8) -> Option<ndarray::ArrayView1<Complex32>> {
+        if symbol >= self.symbols_per_slot {
+            return None;
+        }
+        
+        Some(self.grid.column(symbol as usize))
     }
     
     /// Set symbol from OFDM demodulation

@@ -29,3 +29,4 @@ interfaces.workspace = true
 bitflags = "2.6"
 nom = "7.1"  # For parsing protocol messages
 rand = "0.8"  # For scrambling sequences
+fftw.workspace = true  # For high-performance FFT operations

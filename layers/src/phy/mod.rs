@@ -28,9 +28,10 @@ pub use prach::{PrachDetector, PrachDetectionResult, RachConfigCommon};
 use crate::{LayerError, mac::MacPhyInterface};
 use common::types::{Bandwidth, SubcarrierSpacing, Pci, CellId};
 use interfaces::zmq_rf::{AsyncZmqRf, IqBuffer, ZmqRfConfig};
+use num_complex::Complex32;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use tracing::{debug, error, info, warn, trace};
+use tracing::{debug, error, info, warn};
 
 /// PHY layer configuration
 #[derive(Debug, Clone)]
@@ -130,6 +131,11 @@ pub struct EnhancedPhyLayer {
     rf_tx_channel: Option<tokio::sync::mpsc::Sender<IqBuffer>>,
     /// MAC-PHY interface for scheduling
     mac_interface: Option<Arc<dyn MacPhyInterface>>,
+    /// Pre-computed PSS sequence (doesn't change)
+    pss_sequence_precomputed: Vec<Complex32>,
+    /// Pre-computed SSS sequences (for even and odd frames)
+    sss_sequence_even_frame: Vec<Complex32>,
+    sss_sequence_odd_frame: Vec<Complex32>,
 }
 
 impl EnhancedPhyLayer {
@@ -230,6 +236,15 @@ impl EnhancedPhyLayer {
         let rach_config = RachConfigCommon::default();
         let prach_detector = PrachDetector::new(config.cell_id, rach_config)?;
         
+        // Pre-compute PSS sequence (doesn't change)
+        let pss_sequence_precomputed = pss_generator.generate();
+        info!("Pre-computed PSS sequence with {} samples", pss_sequence_precomputed.len());
+        
+        // Pre-compute SSS sequences for even and odd frames
+        let sss_sequence_even_frame = sss_generator.generate(0); // Even frame
+        let sss_sequence_odd_frame = sss_generator.generate(1);  // Odd frame
+        info!("Pre-computed SSS sequences for even/odd frames");
+        
         Ok(Self {
             config,
             rf_interface: None,
@@ -248,6 +263,9 @@ impl EnhancedPhyLayer {
             initialized: false,
             rf_tx_channel: None,
             mac_interface: None,
+            pss_sequence_precomputed,
+            sss_sequence_even_frame,
+            sss_sequence_odd_frame,
         })
     }
     
@@ -328,8 +346,6 @@ impl EnhancedPhyLayer {
         let resource_grid = self.resource_grid.clone();
         debug!("Resource grid reference obtained");
         let ofdm_modulator = self.ofdm_modulator.clone();
-        let pss_generator = self.pss_generator.clone();
-        let sss_generator = self.sss_generator.clone();
         let pbch_processor = self.pbch_processor.clone();
         let pdcch_processor = self.pdcch_processor.clone();
         let pdsch_processor = self.pdsch_processor.clone();
@@ -338,6 +354,10 @@ impl EnhancedPhyLayer {
         debug!("RF TX channel obtained");
         let config = self.config.clone();
         let mac_interface = self.mac_interface.clone();
+        // Clone pre-computed sequences
+        let pss_sequence = self.pss_sequence_precomputed.clone();
+        let sss_sequence_even = self.sss_sequence_even_frame.clone();
+        let sss_sequence_odd = self.sss_sequence_odd_frame.clone();
         
         tokio::spawn(async move {
             debug!("Downlink processing task started");
@@ -356,8 +376,7 @@ impl EnhancedPhyLayer {
                 config.bandwidth.to_sample_rate()
             };
             let samples_per_symbol = ((actual_sample_rate * symbol_duration.as_secs_f64()) as usize + 1) & !1; // Round up to even
-            info!("Samples per symbol: {}, Symbol duration: {:?}, Sample rate: {} MHz", 
-                  samples_per_symbol, symbol_duration, actual_sample_rate / 1e6);
+            // Symbol timing: samples_per_symbol={samples_per_symbol}, duration={symbol_duration:?}
             
             while *running.read().await {
                 // Process all symbols in a slot as a batch for better timing
@@ -368,8 +387,6 @@ impl EnhancedPhyLayer {
                     let frame = state_guard.frame_number;
                     let slot = state_guard.slot_number;
                     let symbol = state_guard.symbol_number;
-                    
-                    trace!("DL processing: frame={}, slot={}, symbol={}", frame, slot, symbol);
                     
                     // Clear resource grid for this symbol
                     {
@@ -397,40 +414,25 @@ impl EnhancedPhyLayer {
                         .unwrap_or_else(|| frame_structure.is_sync_symbol(frame, slot, symbol));
                     
                     if should_send_ssb {
-                        debug!("Processing sync symbol: frame={}, slot={}, symbol={}", frame, slot, symbol);
+                        // OPTIMIZATION: Using pre-computed PSS sequence
                         if frame_structure.is_pss_symbol(symbol) {
-                            let pss_symbols = pss_generator.generate();
-                            
-                            // Calculate PSS power metrics
-                            let pss_avg_power: f32 = pss_symbols.iter().map(|s| s.norm_sqr()).sum::<f32>() / pss_symbols.len() as f32;
-                            let pss_peak_power: f32 = pss_symbols.iter().map(|s| s.norm_sqr()).fold(0.0, f32::max);
-                            info!("PSS signal power: avg={:.3} ({:.1} dB), peak={:.3} ({:.1} dB), amplitude=20 dB",
-                                  pss_avg_power, 10.0 * pss_avg_power.log10(),
-                                  pss_peak_power, 10.0 * pss_peak_power.log10());
-                            
                             {
                                 let mut grid = resource_grid.lock().await;
-                                let _ = grid.map_pss(symbol, &pss_symbols);
+                                let _ = grid.map_pss(symbol, &pss_sequence);
                             }
-                            // DEBUG: Check if PSS was actually mapped
-                            {
-                                let grid = resource_grid.lock().await;
-                                let symbol_data = grid.get_symbol(symbol);
-                                let non_zero_count = symbol_data.iter().filter(|x| x.norm() > 0.0).count();
-                                let grid_avg_power: f32 = symbol_data.iter().map(|s| s.norm_sqr()).sum::<f32>() / symbol_data.len() as f32;
-                                debug!("DEBUG: After PSS mapping, symbol {} has {} non-zero samples out of {}, grid avg power={:.6} ({:.1} dB)", 
-                                      symbol, non_zero_count, symbol_data.len(), grid_avg_power, 10.0 * grid_avg_power.log10());
-                            }
-                            info!("Mapped PSS at frame={}, slot={}, symbol={} (SSB transmission)", frame, slot, symbol);
                         }
                         
+                        // OPTIMIZATION: Using pre-computed SSS sequences
                         if frame_structure.is_sss_symbol(symbol) {
-                            let sss_symbols = sss_generator.generate(frame);
+                            let sss_symbols = if frame % 2 == 0 {
+                                &sss_sequence_even
+                            } else {
+                                &sss_sequence_odd
+                            };
                             {
                                 let mut grid = resource_grid.lock().await;
-                                let _ = grid.map_sss(symbol, &sss_symbols);
+                                let _ = grid.map_sss(symbol, sss_symbols);
                             }
-                            info!("Mapped SSS at frame={}, slot={}, symbol={} (SSB transmission)", frame, slot, symbol);
                         }
                     }
                     
@@ -450,7 +452,7 @@ impl EnhancedPhyLayer {
                             // Map PBCH DMRS (crucial for demodulation)
                             let _ = grid.map_pbch_dmrs(symbol, config.cell_id.0);
                         }
-                        info!("Mapped PBCH with DMRS at frame={}, slot={}, symbol={}", frame, slot, symbol);
+                        // PBCH with DMRS mapped
                     }
                     
                     // Map SIB1 if scheduled by MAC
@@ -479,7 +481,7 @@ impl EnhancedPhyLayer {
                                         sib1_info.cce_index,
                                     );
                                 }
-                                info!("Mapped PDCCH for SIB1 at frame={}, slot={}, symbol={}", frame, slot, symbol);
+                                // PDCCH for SIB1 mapped
                             }
                             
                             // Map PDSCH for SIB1 data
@@ -519,8 +521,7 @@ impl EnhancedPhyLayer {
                                                     &pdsch_config,
                                                 );
                                             }
-                                            info!("Mapped PDSCH for SIB1 at frame={}, slot={}, symbol={} (payload: {} bytes)", 
-                                                  frame, slot, symbol, sib1_payload.len());
+                                            // PDSCH for SIB1 mapped
                                         }
                                         Err(e) => {
                                             error!("Failed to get SIB1 payload from MAC: {}", e);
@@ -531,18 +532,15 @@ impl EnhancedPhyLayer {
                         }
                     }
                     
+                    // OPTIMIZATION: Removed continuous signal transmission for performance
+                    // The UE should be able to detect the cell with just SSB and SIB1 transmissions
+                    
                     // OFDM modulation
                     let time_samples = {
                         let grid = resource_grid.lock().await;
                         let mut samples = ofdm_modulator.modulate(&*grid, symbol);
                         // Ensure correct number of samples
                         samples.resize(samples_per_symbol, num_complex::Complex32::new(0.0, 0.0));
-                        
-                        // DEBUG: Check modulated samples
-                        let non_zero_count = samples.iter().filter(|x| x.norm() > 0.0).count();
-                        debug!("DEBUG: OFDM modulated symbol {} has {} non-zero samples out of {}", 
-                              symbol, non_zero_count, samples.len());
-                        
                         samples
                     };
                     
@@ -550,19 +548,11 @@ impl EnhancedPhyLayer {
                     let timestamp = state_guard.sample_count;
                     let iq_buffer = IqBuffer::from_samples(time_samples, timestamp, 0);
                     
-                    // Send to RF through channel (non-blocking)
-                    // DEBUG: Check buffer before sending
-                    let sample_count = iq_buffer.samples.len();
-                    let non_zero = iq_buffer.samples.iter().filter(|s| s.norm() > 0.0).count();
-                    debug!("PHY: Sending {} samples ({} non-zero) to RF channel", sample_count, non_zero);
-                    
                     // Send samples to RF channel - use blocking send to apply backpressure
                     // This prevents dropping samples and ensures timing synchronization
                     if let Err(e) = rf_tx_channel.send(iq_buffer).await {
                         error!("PHY: Failed to send samples to RF channel: {}", e);
                         break;
-                    } else {
-                        debug!("PHY: Successfully queued samples for transmission");
                     }
                     
                     // Update state

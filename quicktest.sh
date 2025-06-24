@@ -12,15 +12,22 @@ set -e  # Exit on error
 
 # Parse command line arguments
 USE_REFERENCE=false
+WITH_OPEN5GS=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --use-reference)
             USE_REFERENCE=true
             shift
             ;;
+        --with-open5gs)
+            WITH_OPEN5GS=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--use-reference]"
+            echo "Usage: $0 [--use-reference] [--with-open5gs]"
+            echo "  --use-reference: Use srsRAN gNodeB instead of our implementation"
+            echo "  --with-open5gs: Start Open5GS 5G Core before testing"
             exit 1
             ;;
     esac
@@ -88,6 +95,37 @@ if [ -f /.dockerenv ]; then
     
     log_info "ZMQ ports cleaned up"
     
+    # Start Open5GS if requested
+    if [ "$WITH_OPEN5GS" = true ]; then
+        log_info "Starting Open5GS 5G Core..."
+        
+        # Configure Open5GS for localhost if not already done
+        if [ -f "/workspace/scripts/open5gs/configure-localhost.sh" ]; then
+            /workspace/scripts/open5gs/configure-localhost.sh > "$LOG_DIR/open5gs_config.log" 2>&1
+        fi
+        
+        # Start Open5GS
+        if [ -f "/workspace/scripts/open5gs/start-open5gs.sh" ]; then
+            /workspace/scripts/open5gs/start-open5gs.sh > "$LOG_DIR/open5gs_start.log" 2>&1
+            log_info "Open5GS started. Waiting for initialization..."
+            sleep 5
+            
+            # Check status
+            if [ -f "/workspace/scripts/open5gs/status-open5gs.sh" ]; then
+                /workspace/scripts/open5gs/status-open5gs.sh >> "$LOG_DIR/open5gs_status.log" 2>&1
+                cat "$LOG_DIR/open5gs_status.log"
+            fi
+            
+            # Add test subscriber
+            if [ -f "/opt/open5gs/bin/add-subscriber.sh" ]; then
+                log_info "Adding test subscriber..."
+                /opt/open5gs/bin/add-subscriber.sh "001010123456789" > "$LOG_DIR/open5gs_subscriber.log" 2>&1
+            fi
+        else
+            log_warn "Open5GS scripts not found. Proceeding without 5G Core..."
+        fi
+    fi
+    
     if [ "$USE_REFERENCE" = true ]; then
         log_info "Starting validation with REFERENCE srsRAN gNodeB..."
     else
@@ -131,10 +169,10 @@ ru_sdr:
 cell_cfg:
   dl_arfcn: 368500
   band: 3
-  channel_bandwidth_MHz: 20
+  channel_bandwidth_MHz: 10
   common_scs: 15
   plmn: "00101"
-  tac: 1
+  tac: 7
 
 log:
   filename: /tmp/gnb.log
@@ -159,7 +197,8 @@ EOF
         log_info "Starting Albor Space GNodeB..."
         if [ -f "/workspace/target/release/albor_gnodeb" ]; then
             cd /workspace
-            ./target/release/albor_gnodeb > "$LOG_DIR/gnodeb.log" 2>&1 &
+            GNODEB_ARGS="--pci 1"
+            ./target/release/albor_gnodeb $GNODEB_ARGS > "$LOG_DIR/gnodeb.log" 2>&1 &
             GNODEB_PID=$!
             log_info "Albor GNodeB started with PID: $GNODEB_PID"
             
@@ -190,41 +229,40 @@ EOF
     cat > /tmp/ue_zmq.conf << 'EOF'
 [rf]
 freq_offset = 0
-tx_gain = 50
+tx_gain = 75
 rx_gain = 40
 srate = 23.04e6
 nof_antennas = 1
 
-# ZMQ configuration for connection to GNodeB
 device_name = zmq
-device_args = fail_on_disconnect=true,tx_port0=tcp://*:2001,rx_port0=tcp://localhost:2000,base_srate=23.04e6
+device_args = tx_port=tcp://127.0.0.1:2001,rx_port=tcp://127.0.0.1:2000,id=ue,base_srate=23.04e6
 
 [rat.eutra]
-dl_earfcn = 3350
 nof_carriers = 0
 
 [rat.nr]
 bands = 3
 nof_carriers = 1
-max_nof_prb = 106
-nof_prb = 106
+dl_nr_arfcn = 368500
+ssb_nr_arfcn = 368410
+nof_prb = 52
+scs = 15
+ssb_scs = 15
 
 [rrc]
 release = 15
 ue_category = 4
-# Enable NR measurements
 nr_measurement_pci = 1
 nr_short_sn_support = true
 
 [pcap]
-enable = mac_nr
+enable = none
 mac_filename = /tmp/ue_mac.pcap
 mac_nr_filename = /tmp/ue_mac_nr.pcap
 nas_filename = /tmp/ue_nas.pcap
 
 [log]
 all_level = debug
-# Enable maximum PHY logging to debug cell search
 phy_level = debug
 phy_lib_level = debug
 mac_level = debug
@@ -246,6 +284,9 @@ imei = 353490069873319
 [nas]
 apn = internet
 apn_protocol = ipv4
+force_imsi_attach = false
+eia = 1,2,3
+eea = 0,1,2,3
 
 [gw]
 netns = 
@@ -254,6 +295,11 @@ ip_netmask = 255.255.255.0
 
 [gui]
 enable = false
+
+[general]
+metrics_csv_enable = false
+metrics_period_secs = 1
+metrics_csv_filename = /tmp/ue_metrics.csv
 EOF
     
     # Step 3: Execute srsRAN 5G UE (pre-compiled in Docker image)
@@ -311,6 +357,14 @@ EOF
         log_info "UE terminated"
     fi
     
+    # Stop Open5GS if it was started
+    if [ "$WITH_OPEN5GS" = true ]; then
+        log_info "Stopping Open5GS..."
+        if [ -f "/workspace/scripts/open5gs/stop-open5gs.sh" ]; then
+            /workspace/scripts/open5gs/stop-open5gs.sh > "$LOG_DIR/open5gs_stop.log" 2>&1
+        fi
+    fi
+    
     # Step 6: Generate summary
     log_info "Test completed. Generating summary..."
     
@@ -361,6 +415,9 @@ EOF
     fi
     log_info "  - ue.log: srsRAN UE output"
     log_info "  - summary.log: Test summary"
+    if [ "$WITH_OPEN5GS" = true ]; then
+        log_info "  - open5gs_*.log: Open5GS Core logs"
+    fi
     
     # Exit with appropriate code
     if grep -q "error\|failed\|Error\|Failed" "$LOG_DIR"/*.log 2>/dev/null; then

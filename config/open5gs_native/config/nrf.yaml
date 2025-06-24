@@ -1,0 +1,14 @@
+db_uri: mongodb://127.0.0.2/open5gs
+
+logger:
+  level: info
+
+nrf:
+  serving:
+    - plmn_id:
+        mcc: 001
+        mnc: 01
+  sbi:
+    server:
+      - address: 127.0.0.3
+        port: 7777

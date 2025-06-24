@@ -1,11 +1,11 @@
-# srsRAN Project gNB configuration for ZMQ with srsUE
+# srsRAN Project gNB configuration for ZMQ with srsUE - localhost version
 # Based on gnb_rf_b210_fdd_srsUE.yml adapted for ZMQ
 
 cu_cp:
   amf:
-    addr: 10.53.1.2                 # AMF address in Open5GS network
+    addr: 127.0.0.1                 # AMF address on localhost
     port: 38412                     # AMF NGAP port  
-    bind_addr: 10.53.1.50           # gNB bind address (container IP in Open5GS network)
+    bind_addr: 127.0.0.1            # gNB bind address on localhost
     supported_tracking_areas:
       - tac: 7
         plmn_list:
@@ -23,7 +23,7 @@ ru_sdr:
 cell_cfg:
   dl_arfcn: 368500                  # DL ARFCN for band 3
   band: 3                           # Band 3 (1800 MHz FDD)
-  channel_bandwidth_MHz: 20         # 20 MHz bandwidth 
+  channel_bandwidth_MHz: 10         # 10 MHz bandwidth (52 PRBs)
   common_scs: 15                    # 15 kHz subcarrier spacing
   plmn: "00101"                     # PLMN matching AMF
   tac: 7                            # TAC matching AMF
@@ -36,7 +36,7 @@ cell_cfg:
       dci_format_0_1_and_1_1: false
     common:
       ss0_index: 0
-      coreset0_index: 12            # CORESET#0 index for band 3
+      coreset0_index: 6            # CORESET#0 index for 10 MHz bandwidth
   
   # PRACH configuration
   prach:
@@ -49,11 +49,11 @@ cell_cfg:
     mcs_table: qam64
 
 log:
-  filename: /tmp/gnb.log
   all_level: info
-
-pcap:
-  mac_enable: enable
-  mac_filename: /tmp/gnb_mac.pcap
-  ngap_enable: enable
-  ngap_filename: /tmp/gnb_ngap.pcap
+  phy_level: info
+  mac_level: info
+  rlc_level: info
+  pdcp_level: info
+  rrc_level: info
+  ngap_level: info
+  hex_max_size: 32

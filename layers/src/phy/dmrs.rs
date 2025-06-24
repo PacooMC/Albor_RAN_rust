@@ -2,7 +2,6 @@
 /// Based on 3GPP TS 38.211 Section 7.4.1
 
 use num_complex::Complex32;
-use tracing::debug;
 
 /// DMRS Type configuration
 #[derive(Debug, Clone, Copy, PartialEq)]

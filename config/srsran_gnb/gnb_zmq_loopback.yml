@@ -1,0 +1,63 @@
+# gNodeB configuration using loopback interface
+# This allows gNodeB and UPF to both use port 2152 without conflict
+
+cu_cp:
+  amf:
+    addr: 127.0.0.4        # AMF listening on lo4
+    port: 38412
+    bind_addr: 127.0.0.11  # gNodeB binds to lo11
+    supported_tracking_areas:
+      - tac: 7
+        plmn_list:
+          - plmn: "00101"
+            tai_slice_support_list:
+              - sst: 1
+  inactivity_timer: 7200
+
+cu_up:
+  f1u_cu_up_bind_addr: 127.0.0.11  # Bind F1-U to gNodeB IP
+  gtpu_bind_addr: 127.0.0.11       # Bind GTP-U to gNodeB IP (port 2152)
+
+ru_sdr:
+  device_driver: zmq
+  device_args: tx_port=tcp://127.0.0.1:2000,rx_port=tcp://127.0.0.1:2001,base_srate=23.04e6
+  srate: 23.04
+  tx_gain: 75
+  rx_gain: 75
+
+cell_cfg:
+  dl_arfcn: 368500         # Band 3, 1842.5 MHz
+  band: 3
+  channel_bandwidth_MHz: 10
+  common_scs: 15
+  plmn: "00101"
+  tac: 7
+  pci: 1
+  
+  pdcch:
+    common:
+      ss0_index: 0
+      coreset0_index: 6    # Correct for Band 3, 10 MHz
+    dedicated:
+      ss2_type: common
+      dci_format_0_1_and_1_1: false
+  
+  prach:
+    prach_config_index: 1  # FDD
+  
+  pdsch:
+    mcs_table: qam64
+  
+  pusch:
+    mcs_table: qam64
+
+log:
+  filename: /tmp/gnb_loopback.log
+  all_level: info
+  phy_level: info
+  mac_level: info
+  rlc_level: info
+  pdcp_level: info
+  rrc_level: info
+  ngap_level: info
+  gtpu_level: info

@@ -1,0 +1,32 @@
+db_uri: mongodb://127.0.0.2/open5gs
+
+logger:
+  level: info
+
+smf:
+  sbi:
+    server:
+      - address: 127.0.0.5
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.3:7777
+  pfcp:
+    server:
+      - address: 127.0.0.5
+        port: 8805  # Different port to avoid conflict with UPF
+    client:
+      upf:
+        - address: 127.0.0.10
+          port: 8806
+  metrics:
+    server:
+      - address: 127.0.0.5
+        port: 9090
+  session:
+    - subnet: 10.45.0.0/16
+      gateway: 10.45.0.1
+  dns:
+    - 8.8.8.8
+    - 8.8.4.4
+  mtu: 1400

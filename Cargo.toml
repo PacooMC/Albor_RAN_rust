@@ -46,6 +46,7 @@ num-traits = "0.2"
 num-derive = "0.4"
 rustfft = "6.2"
 ndarray = "0.16"
+fftw = "0.8"
 
 # Time handling
 chrono = "0.4"

@@ -76,9 +76,20 @@ impl PssGenerator {
                self.sequence.len(), self.amplitude);
         
         // Apply amplitude scaling
-        self.sequence.iter()
+        let scaled_sequence: Vec<Complex32> = self.sequence.iter()
             .map(|&s| s * self.amplitude)
-            .collect()
+            .collect();
+        
+        // Debug output: print first 10 values to verify against srsRAN
+        info!("PSS sequence (NID2={}) first 10 values:", self.nid2);
+        for i in 0..10.min(scaled_sequence.len()) {
+            info!("  PSS[{}] = {:.6} + {:.6}j", 
+                  i, 
+                  scaled_sequence[i].re, 
+                  scaled_sequence[i].im);
+        }
+        
+        scaled_sequence
     }
     
     /// Get PSS sequence ID
@@ -150,9 +161,20 @@ impl SssGenerator {
                sequence.len(), self.amplitude);
         
         // Apply amplitude scaling
-        sequence.iter()
+        let scaled_sequence: Vec<Complex32> = sequence.iter()
             .map(|&s| s * self.amplitude)
-            .collect()
+            .collect();
+        
+        // Debug output: print first 10 values to verify against srsRAN
+        info!("SSS sequence (NID1={}, NID2={}) first 10 values:", self.nid1, self.nid2);
+        for i in 0..10.min(scaled_sequence.len()) {
+            info!("  SSS[{}] = {:.6} + {:.6}j", 
+                  i, 
+                  scaled_sequence[i].re, 
+                  scaled_sequence[i].im);
+        }
+        
+        scaled_sequence
     }
     
     /// Set SSS amplitude in dB
@@ -171,44 +193,33 @@ impl SssGenerator {
 fn generate_pss_sequence(nid2: u8) -> Vec<Complex32> {
     let mut sequence = Vec::with_capacity(PSS_LENGTH);
     
-    // Generate m-sequence
-    // Initialize with correct state as per 3GPP TS 38.211 and srsRAN
-    let mut x = [0u8; 7];
-    x[0] = 0;
-    x[1] = 1;
-    x[2] = 1;
-    x[3] = 0;
-    x[4] = 1;
-    x[5] = 1;
+    // Generate m-sequence exactly as srsRAN does
+    // Initialize with state from srsRAN: x[6]=1, x[5]=1, x[4]=1, x[3]=0, x[2]=1, x[1]=1, x[0]=0
+    let mut x = vec![0u8; PSS_LENGTH + 7];
     x[6] = 1;
+    x[5] = 1;
+    x[4] = 1;
+    x[3] = 0;
+    x[2] = 1;
+    x[1] = 1;
+    x[0] = 0;
     
-    let mut d_u = Vec::with_capacity(PSS_LENGTH);
-    
-    for _ in 0..PSS_LENGTH {
-        // Output bit - use x[0] as output (consistent with standard)
-        d_u.push(x[0]);
-        
-        // Shift register with feedback
-        // Polynomial: x^7 + x^4 + 1
-        let feedback = (x[0] + x[3]) % 2;
-        
-        // Shift left
-        for i in 0..6 {
-            x[i] = x[i + 1];
-        }
-        x[6] = feedback;
+    // Generate M sequence x exactly as srsRAN
+    for i in 0..PSS_LENGTH {
+        x[i + 7] = (x[i + 4] + x[i]) % 2;
     }
     
     // Calculate cyclic shift M as per 3GPP TS 38.211
-    let m = (43 * nid2 as usize) % PSS_LENGTH;
+    let m_shift = (43 * nid2 as usize) % PSS_LENGTH;
     
-    // Generate BPSK modulated sequence with cyclic shift
-    // As per 3GPP: d_pss(n) = 1 - 2*x((n + m) mod 127)
+    // Generate BPSK modulated sequence with cyclic shift applied during output
+    // This matches srsRAN's approach exactly
     let amplitude = 1.0;  // Full scale amplitude
     for n in 0..PSS_LENGTH {
-        let idx = (n + m) % PSS_LENGTH;
+        // Apply cyclic shift when reading from m-sequence (srsRAN approach)
+        let m = (n + m_shift) % PSS_LENGTH;
         // BPSK mapping: x=0 -> d=1, x=1 -> d=-1
-        let value = amplitude * (1.0 - 2.0 * d_u[idx] as f32);
+        let value = amplitude * (1.0 - 2.0 * x[m] as f32);
         sequence.push(Complex32::new(value, 0.0));
     }
     
@@ -216,88 +227,83 @@ fn generate_pss_sequence(nid2: u8) -> Vec<Complex32> {
 }
 
 /// Generate SSS sequence
-fn generate_sss_sequence(nid1: u16, nid2: u8, is_subframe_5: bool) -> Vec<Complex32> {
+fn generate_sss_sequence(nid1: u16, nid2: u8, _is_subframe_5: bool) -> Vec<Complex32> {
     let mut sequence = Vec::with_capacity(SSS_LENGTH);
     
-    // Generate x0 and x1 m-sequences
-    let x0 = generate_m_sequence(0);
-    let x1 = generate_m_sequence(1);
+    // Generate base sequences exactly as srsRAN does
+    let (sequence0, sequence1) = generate_sss_base_sequences();
     
-    // Calculate m0 and m1 based on NID1
-    let m0 = (nid1 % 112) as usize;
-    let m1 = ((nid1 / 112) + (nid1 % 112) + 1) % 112;
+    // Calculate m0 and m1 exactly as srsRAN
+    // m0 = 15 * (NID_1 / 112) + 5 * NID_2
+    // m1 = NID_1 % 112
+    let m0 = (15 * (nid1 / 112) + 5 * nid2 as u16) as usize;
+    let m1 = (nid1 % 112) as usize;
     
-    // Generate SSS sequence
+    // Generate SSS by applying cyclic shifts and element-wise multiplication
+    // This matches srsRAN's approach exactly
     for n in 0..SSS_LENGTH {
-        let s0_idx = (n + m0 as usize) % 127;
-        let s1_idx = (n + m1 as usize) % 127;
+        // Apply d0 sequence with cyclic shift m0
+        let idx0 = (n + m0) % SSS_LENGTH;
+        let d0_value = sequence0[idx0];
         
-        let (s0, s1) = if !is_subframe_5 {
-            (x0[s0_idx], x1[s1_idx])
-        } else {
-            (x1[s1_idx], x0[s0_idx]) // Swapped for subframe 5
-        };
+        // Apply d1 sequence with cyclic shift m1
+        let idx1 = (n + m1) % SSS_LENGTH;
+        let d1_value = sequence1[idx1];
         
-        // Apply scrambling based on NID2
-        let c0 = generate_scrambling_sequence(nid2, 0);
-        let c1 = generate_scrambling_sequence(nid2, 1);
-        
-        let value = (1.0 - 2.0 * s0 as f32) * (1.0 - 2.0 * c0[n] as f32) +
-                   (1.0 - 2.0 * s1 as f32) * (1.0 - 2.0 * c1[n] as f32);
-        
-        sequence.push(Complex32::new(value / 2.0, 0.0));
+        // Element-wise multiplication (as srsRAN does)
+        let value = d0_value * d1_value;
+        sequence.push(Complex32::new(value, 0.0));
     }
     
     sequence
 }
 
-/// Generate m-sequence for SSS
-fn generate_m_sequence(init: u8) -> Vec<u8> {
-    let mut sequence = Vec::with_capacity(127);
-    // Initialize based on sequence type
-    let mut x = if init == 0 {
-        [1, 0, 0, 0, 0, 0, 0]
-    } else {
-        [0, 0, 0, 0, 0, 0, 1]
-    };
+/// Generate SSS base sequences exactly as srsRAN
+fn generate_sss_base_sequences() -> (Vec<f32>, Vec<f32>) {
+    let mut sequence0 = Vec::with_capacity(SSS_LENGTH);
+    let mut sequence1 = Vec::with_capacity(SSS_LENGTH);
     
-    for _ in 0..127 {
-        sequence.push(x[6]);
-        
-        // Polynomial: x^7 + x^4 + 1
-        let feedback = x[6] ^ x[3];
-        for i in (1..7).rev() {
-            x[i] = x[i - 1];
-        }
-        x[0] = feedback;
+    // Initialize M sequence x0
+    let mut x0 = vec![0u8; SSS_LENGTH + 7];
+    x0[6] = 0;
+    x0[5] = 0;
+    x0[4] = 0;
+    x0[3] = 0;
+    x0[2] = 0;
+    x0[1] = 0;
+    x0[0] = 1;
+    
+    // Generate M sequence x0 with polynomial x^7 + x^4 + 1
+    for i in 0..SSS_LENGTH {
+        x0[i + 7] = (x0[i + 4] + x0[i]) % 2;
     }
     
-    sequence
-}
-
-/// Generate scrambling sequence for SSS
-fn generate_scrambling_sequence(nid2: u8, c_init_offset: u8) -> Vec<u8> {
-    let mut sequence = Vec::with_capacity(127);
-    let mut x = [0u8; 7];
-    
-    // Initialize based on NID2 and offset
-    let init_val = (nid2 + c_init_offset) % 127;
-    for i in 0..7 {
-        x[i] = ((init_val >> i) & 1) as u8;
+    // Modulate M sequence to create d0
+    for i in 0..SSS_LENGTH {
+        sequence0.push(1.0 - 2.0 * x0[i] as f32);
     }
     
-    for _ in 0..127 {
-        sequence.push(x[6]);
-        
-        // Polynomial: x^7 + x^4 + 1
-        let feedback = x[6] ^ x[3];
-        for i in (1..7).rev() {
-            x[i] = x[i - 1];
-        }
-        x[0] = feedback;
+    // Initialize M sequence x1
+    let mut x1 = vec![0u8; SSS_LENGTH + 7];
+    x1[6] = 0;
+    x1[5] = 0;
+    x1[4] = 0;
+    x1[3] = 0;
+    x1[2] = 0;
+    x1[1] = 0;
+    x1[0] = 1;
+    
+    // Generate M sequence x1 with polynomial x^7 + x + 1
+    for i in 0..SSS_LENGTH {
+        x1[i + 7] = (x1[i + 1] + x1[i]) % 2;
     }
     
-    sequence
+    // Modulate M sequence to create d1
+    for i in 0..SSS_LENGTH {
+        sequence1.push(1.0 - 2.0 * x1[i] as f32);
+    }
+    
+    (sequence0, sequence1)
 }
 
 /// Cell search result

@@ -40,7 +40,7 @@ struct Args {
     frequency_mhz: f64,
     
     /// Bandwidth in MHz (5, 10, 15, 20, 25, 30, 40, 50, 60, 80, 100)
-    #[arg(long, default_value = "20")]
+    #[arg(long, default_value = "10")]
     bandwidth_mhz: u32,
     
     /// Subcarrier spacing in kHz (15, 30, 60, 120, 240)
@@ -54,7 +54,9 @@ struct Args {
     /// Number of channels
     #[arg(long, default_value = "1")]
     num_channels: usize,
+    
 }
+
 
 /// GNodeB application state
 struct GnbState {
@@ -117,6 +119,7 @@ async fn main() -> Result<()> {
     info!("  Frequency: {} MHz", args.frequency_mhz);
     info!("  Bandwidth: {} MHz", args.bandwidth_mhz);
     info!("  Subcarrier spacing: {} kHz", args.scs_khz);
+    info!("  PHY mode: Enhanced (full)");
 
     // Create PHY configuration
     let phy_config = PhyConfig {
@@ -149,28 +152,27 @@ async fn main() -> Result<()> {
     };
     
     // Initialize MAC layer
-    let mut mac_layer = EnhancedMacLayer::new(mac_config)?;
+    let mut mac_layer = EnhancedMacLayer::new(mac_config.clone())?;
     mac_layer.initialize().await?;
     info!("MAC layer initialized");
-    
-    // Create Arc for MAC layer - this will be used as the interface
     let mac_layer = Arc::new(mac_layer);
     
     // Initialize PHY layer
-    let mut phy_layer = EnhancedPhyLayer::new(phy_config)?;
+    let mut enhanced_phy = EnhancedPhyLayer::new(phy_config)?;
     
     // Set MAC interface for PHY - cast to trait object
     let mac_interface: Arc<dyn layers::mac::MacPhyInterface> = mac_layer.clone() as Arc<dyn layers::mac::MacPhyInterface>;
-    phy_layer.set_mac_interface(mac_interface);
+    enhanced_phy.set_mac_interface(mac_interface);
     
-    phy_layer.initialize_with_rf(zmq_config).await?;
+    enhanced_phy.initialize_with_rf(zmq_config).await?;
+    info!("Enhanced PHY layer initialized (full mode)");
+    let phy_layer = Arc::new(RwLock::new(enhanced_phy));
     
-    let phy_layer = Arc::new(RwLock::new(phy_layer));
     let running = Arc::new(RwLock::new(true));
     
     let state = GnbState {
-        phy_layer: phy_layer.clone(),
-        mac_layer: mac_layer.clone(),
+        phy_layer,
+        mac_layer,
         running: running.clone(),
     };
 
@@ -178,18 +180,18 @@ async fn main() -> Result<()> {
     
     // Start PHY processing in background
     let phy_handle = {
-        let phy = phy_layer.clone();
+        let phy = state.phy_layer.clone();
         tokio::spawn(async move {
             let phy_guard = phy.read().await;
             if let Err(e) = phy_guard.start_processing().await {
-                error!("PHY processing error: {}", e);
+                error!("Enhanced PHY processing error: {}", e);
             }
         })
     };
     
     // Start statistics reporting
     let stats_handle = {
-        let phy = phy_layer.clone();
+        let phy = state.phy_layer.clone();
         let running = running.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
@@ -230,11 +232,12 @@ async fn main() -> Result<()> {
     *running.write().await = false;
     
     // Stop PHY processing
-    let phy_guard = phy_layer.read().await;
-    if let Err(e) = phy_guard.stop_processing().await {
-        error!("Error stopping PHY: {}", e);
+    {
+        let phy_guard = state.phy_layer.read().await;
+        if let Err(e) = phy_guard.stop_processing().await {
+            error!("Error stopping enhanced PHY: {}", e);
+        }
     }
-    drop(phy_guard);
     
     // Wait for tasks to complete
     let _ = tokio::time::timeout(

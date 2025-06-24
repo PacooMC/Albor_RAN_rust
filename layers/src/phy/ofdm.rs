@@ -1,11 +1,14 @@
 //! OFDM Modulation and Demodulation for 5G NR
 //! 
 //! Implements OFDM processing according to 3GPP TS 38.211
+//! Using FFTW for high-performance FFT operations
 
 use crate::LayerError;
 use common::types::SubcarrierSpacing;
 use num_complex::Complex32;
-use rustfft::{FftPlanner, Fft};
+use fftw::array::AlignedVec;
+use fftw::plan::{C2CPlan32, C2CPlan};
+use fftw::types::{Flag, Sign};
 use std::sync::{Arc, Mutex};
 use std::f32::consts::PI;
 use tracing::debug;
@@ -13,7 +16,6 @@ use tracing::debug;
 use super::{CyclicPrefix, ResourceGrid};
 
 /// OFDM modulator for downlink
-#[derive(Clone)]
 pub struct OfdmModulator {
     /// FFT size
     fft_size: usize,
@@ -21,12 +23,14 @@ pub struct OfdmModulator {
     cp_type: CyclicPrefix,
     /// Subcarrier spacing
     scs: SubcarrierSpacing,
-    /// IFFT instance
-    ifft: Arc<dyn Fft<f32>>,
+    /// IFFT plan (pre-computed for performance)
+    ifft_plan: Arc<Mutex<C2CPlan32>>,
+    /// Pre-allocated input buffer for IFFT
+    ifft_input: Arc<Mutex<AlignedVec<num_complex::Complex<f32>>>>,
+    /// Pre-allocated output buffer for IFFT
+    ifft_output: Arc<Mutex<AlignedVec<num_complex::Complex<f32>>>>,
     /// CP lengths for each symbol
     cp_lengths: Vec<usize>,
-    /// Scratch buffer for FFT
-    scratch: Arc<Mutex<Vec<Complex32>>>,
     /// Baseband gain in dB (backoff from full scale)
     baseband_gain_db: f32,
     /// Bandwidth in resource blocks
@@ -42,22 +46,24 @@ impl OfdmModulator {
         cp_type: CyclicPrefix,
         scs: SubcarrierSpacing,
     ) -> Result<Self, LayerError> {
-        let mut planner = FftPlanner::new();
-        let ifft = planner.plan_fft_inverse(fft_size);
+        // Create FFTW plan for inverse FFT
+        // Use MEASURE flag for optimal performance (takes more time to plan but faster execution)
+        let ifft_input = AlignedVec::new(fft_size);
+        let ifft_output = AlignedVec::new(fft_size);
+        
+        let ifft_plan = C2CPlan32::aligned(
+            &[fft_size],
+            Sign::Backward,
+            Flag::MEASURE | Flag::DESTROYINPUT,
+        ).map_err(|e| LayerError::InvalidConfiguration(format!("Failed to create IFFT plan: {:?}", e)))?;
         
         // Calculate CP lengths for each symbol in slot
         let cp_lengths = calculate_cp_lengths(fft_size, cp_type, scs);
-        
-        // Create scratch buffer
-        let scratch = Arc::new(Mutex::new(vec![Complex32::new(0.0, 0.0); ifft.get_inplace_scratch_len()]));
         
         // Default bandwidth - will be updated by configure_bandwidth
         let bw_rb = 52; // Default 10 MHz for 15 kHz SCS
         
         // Calculate baseband gain following srsRAN approach
-        // baseband_gain_dB = -convert_power_to_dB(bw_rb * NRE) - baseband_backoff_dB
-        // where NRE = 12 (number of resource elements per RB)
-        // and baseband_backoff_dB = 12.0 (srsRAN default)
         let baseband_backoff_db = 12.0;
         let power_db = 10.0 * (bw_rb as f32 * 12.0).log10();
         let baseband_gain_db = -power_db - baseband_backoff_db;
@@ -66,9 +72,10 @@ impl OfdmModulator {
             fft_size,
             cp_type,
             scs,
-            ifft,
+            ifft_plan: Arc::new(Mutex::new(ifft_plan)),
+            ifft_input: Arc::new(Mutex::new(ifft_input)),
+            ifft_output: Arc::new(Mutex::new(ifft_output)),
             cp_lengths,
-            scratch,
             baseband_gain_db,
             bw_rb,
             apply_fft_normalization: false, // srsRAN doesn't apply 1/sqrt(N)
@@ -77,46 +84,56 @@ impl OfdmModulator {
     
     /// Modulate one OFDM symbol
     pub fn modulate(&self, resource_grid: &ResourceGrid, symbol_index: u8) -> Vec<Complex32> {
-        // Get frequency domain samples from resource grid
-        let mut freq_samples = resource_grid.get_symbol(symbol_index);
+        // Get frequency domain samples
+        let freq_samples = if let Some(view) = resource_grid.get_symbol_view(symbol_index) {
+            view.to_vec()
+        } else {
+            resource_grid.get_symbol(symbol_index)
+        };
         
-        // Apply IFFT
-        {
-            let mut scratch = self.scratch.lock().unwrap();
-            self.ifft.process_with_scratch(&mut freq_samples, &mut scratch);
-        }
+        // Perform IFFT using FFTW
+        let time_samples = {
+            let mut ifft_plan = self.ifft_plan.lock().unwrap();
+            let mut ifft_input = self.ifft_input.lock().unwrap();
+            let mut ifft_output = self.ifft_output.lock().unwrap();
+            
+            // Copy input data to aligned buffer
+            for (i, &sample) in freq_samples.iter().enumerate() {
+                ifft_input[i] = num_complex::Complex::new(sample.re, sample.im);
+            }
+            
+            // Execute IFFT
+            ifft_plan.c2c(&mut ifft_input, &mut ifft_output)
+                .map_err(|e| LayerError::ProcessingError(format!("IFFT failed: {:?}", e)))
+                .unwrap();
+            
+            // Convert back to Complex32
+            ifft_output.iter()
+                .map(|&c| Complex32::new(c.re, c.im))
+                .collect::<Vec<_>>()
+        };
         
         // Scale by FFT size and apply baseband gain
-        // srsRAN approach: only apply configured scale, no FFT normalization by default
         let fft_scale = if self.apply_fft_normalization {
             1.0 / (self.fft_size as f32).sqrt()
         } else {
-            1.0  // srsRAN uses scale=1.0 in OFDM modulator
+            1.0
         };
         let baseband_gain = 10.0_f32.powf(self.baseband_gain_db / 20.0);
         let total_scale = fft_scale * baseband_gain;
         
-        // Apply phase compensation if needed (srsRAN does this)
-        // For now, we'll keep it simple without phase compensation
-        
-        for sample in &mut freq_samples {
-            *sample *= total_scale;
-        }
-        
-        // Log signal power after scaling
-        let avg_power: f32 = freq_samples.iter().map(|s| s.norm_sqr()).sum::<f32>() / freq_samples.len() as f32;
-        let peak_power: f32 = freq_samples.iter().map(|s| s.norm_sqr()).fold(0.0, f32::max);
-        debug!("OFDM symbol {}: avg power={:.6} ({:.1} dB), peak power={:.6} ({:.1} dB), scale={:.6}", 
-               symbol_index, avg_power, 10.0 * avg_power.log10(), peak_power, 10.0 * peak_power.log10(), total_scale);
+        let scaled_samples: Vec<Complex32> = time_samples.iter()
+            .map(|&s| s * total_scale)
+            .collect();
         
         // Add cyclic prefix
         let cp_len = self.cp_lengths[symbol_index as usize % self.cp_lengths.len()];
         let mut output = Vec::with_capacity(self.fft_size + cp_len);
         
         // Copy last cp_len samples as CP
-        output.extend_from_slice(&freq_samples[self.fft_size - cp_len..]);
+        output.extend_from_slice(&scaled_samples[self.fft_size - cp_len..]);
         // Copy all samples
-        output.extend_from_slice(&freq_samples);
+        output.extend_from_slice(&scaled_samples);
         
         output
     }
@@ -182,8 +199,35 @@ impl OfdmModulator {
     }
 }
 
+// Implement Clone manually since FFTW plans don't implement Clone
+impl Clone for OfdmModulator {
+    fn clone(&self) -> Self {
+        // Create new FFTW plan for the clone
+        let mut ifft_input = AlignedVec::new(self.fft_size);
+        let mut ifft_output = AlignedVec::new(self.fft_size);
+        
+        let ifft_plan = C2CPlan32::aligned(
+            &[self.fft_size],
+            Sign::Backward,
+            Flag::MEASURE | Flag::DESTROYINPUT,
+        ).expect("Failed to create IFFT plan for clone");
+        
+        Self {
+            fft_size: self.fft_size,
+            cp_type: self.cp_type,
+            scs: self.scs,
+            ifft_plan: Arc::new(Mutex::new(ifft_plan)),
+            ifft_input: Arc::new(Mutex::new(ifft_input)),
+            ifft_output: Arc::new(Mutex::new(ifft_output)),
+            cp_lengths: self.cp_lengths.clone(),
+            baseband_gain_db: self.baseband_gain_db,
+            bw_rb: self.bw_rb,
+            apply_fft_normalization: self.apply_fft_normalization,
+        }
+    }
+}
+
 /// OFDM demodulator for uplink
-#[derive(Clone)]
 pub struct OfdmDemodulator {
     /// FFT size
     fft_size: usize,
@@ -191,12 +235,14 @@ pub struct OfdmDemodulator {
     cp_type: CyclicPrefix,
     /// Subcarrier spacing
     scs: SubcarrierSpacing,
-    /// FFT instance
-    fft: Arc<dyn Fft<f32>>,
+    /// FFT plan (pre-computed for performance)
+    fft_plan: Arc<Mutex<C2CPlan32>>,
+    /// Pre-allocated input buffer for FFT
+    fft_input: Arc<Mutex<AlignedVec<num_complex::Complex<f32>>>>,
+    /// Pre-allocated output buffer for FFT
+    fft_output: Arc<Mutex<AlignedVec<num_complex::Complex<f32>>>>,
     /// CP lengths for each symbol
     cp_lengths: Vec<usize>,
-    /// Scratch buffer for FFT
-    scratch: Arc<Mutex<Vec<Complex32>>>,
 }
 
 impl OfdmDemodulator {
@@ -206,22 +252,27 @@ impl OfdmDemodulator {
         cp_type: CyclicPrefix,
         scs: SubcarrierSpacing,
     ) -> Result<Self, LayerError> {
-        let mut planner = FftPlanner::new();
-        let fft = planner.plan_fft_forward(fft_size);
+        // Create FFTW plan for forward FFT
+        let fft_input = AlignedVec::new(fft_size);
+        let fft_output = AlignedVec::new(fft_size);
+        
+        let fft_plan = C2CPlan32::aligned(
+            &[fft_size],
+            Sign::Forward,
+            Flag::MEASURE | Flag::DESTROYINPUT,
+        ).map_err(|e| LayerError::InvalidConfiguration(format!("Failed to create FFT plan: {:?}", e)))?;
         
         // Calculate CP lengths for each symbol in slot
         let cp_lengths = calculate_cp_lengths(fft_size, cp_type, scs);
-        
-        // Create scratch buffer
-        let scratch = Arc::new(Mutex::new(vec![Complex32::new(0.0, 0.0); fft.get_inplace_scratch_len()]));
         
         Ok(Self {
             fft_size,
             cp_type,
             scs,
-            fft,
+            fft_plan: Arc::new(Mutex::new(fft_plan)),
+            fft_input: Arc::new(Mutex::new(fft_input)),
+            fft_output: Arc::new(Mutex::new(fft_output)),
             cp_lengths,
-            scratch,
         })
     }
     
@@ -240,28 +291,34 @@ impl OfdmDemodulator {
             ));
         }
         
-        // Skip cyclic prefix and take FFT size samples
-        let mut fft_input: Vec<Complex32> = time_samples[cp_len..].to_vec();
+        // Skip cyclic prefix and perform FFT
+        let freq_samples = {
+            let mut fft_plan = self.fft_plan.lock().unwrap();
+            let mut fft_input = self.fft_input.lock().unwrap();
+            let mut fft_output = self.fft_output.lock().unwrap();
+            
+            // Copy input data (skip CP)
+            for (i, &sample) in time_samples[cp_len..].iter().enumerate() {
+                fft_input[i] = num_complex::Complex::new(sample.re, sample.im);
+            }
+            
+            // Execute FFT
+            fft_plan.c2c(&mut fft_input, &mut fft_output)
+                .map_err(|e| LayerError::ProcessingError(format!("FFT failed: {:?}", e)))?;
+            
+            // Convert back to Complex32 and scale
+            let scale = 1.0 / (self.fft_size as f32).sqrt();
+            fft_output.iter()
+                .map(|&c| Complex32::new(c.re * scale, c.im * scale))
+                .collect::<Vec<_>>()
+        };
         
-        // Apply FFT
-        {
-            let mut scratch = self.scratch.lock().unwrap();
-            self.fft.process_with_scratch(&mut fft_input, &mut scratch);
-        }
-        
-        // Scale by FFT size
-        let scale = 1.0 / (self.fft_size as f32).sqrt();
-        for sample in &mut fft_input {
-            *sample *= scale;
-        }
-        
-        Ok(fft_input)
+        Ok(freq_samples)
     }
     
     /// Demodulate samples into frequency domain
     pub fn demodulate(&self, time_samples: &[Complex32]) -> Vec<Complex32> {
         // For simplicity, assume single symbol demodulation
-        // In practice, this would handle multiple symbols
         if let Ok(freq_samples) = self.demodulate_symbol(time_samples, 0) {
             freq_samples
         } else {
@@ -272,7 +329,6 @@ impl OfdmDemodulator {
     /// Estimate and compensate timing offset
     pub fn estimate_timing_offset(&self, samples: &[Complex32]) -> f32 {
         // Simple correlation-based timing estimation
-        // In practice, use more sophisticated algorithms
         let cp_len = self.cp_lengths[0];
         
         if samples.len() < self.fft_size + cp_len {
@@ -322,6 +378,31 @@ impl OfdmDemodulator {
             avg_phase * sample_rate / (2.0 * PI * self.fft_size as f32)
         } else {
             0.0
+        }
+    }
+}
+
+// Implement Clone manually since FFTW plans don't implement Clone
+impl Clone for OfdmDemodulator {
+    fn clone(&self) -> Self {
+        // Create new FFTW plan for the clone
+        let mut fft_input = AlignedVec::new(self.fft_size);
+        let mut fft_output = AlignedVec::new(self.fft_size);
+        
+        let fft_plan = C2CPlan32::aligned(
+            &[self.fft_size],
+            Sign::Forward,
+            Flag::MEASURE | Flag::DESTROYINPUT,
+        ).expect("Failed to create FFT plan for clone");
+        
+        Self {
+            fft_size: self.fft_size,
+            cp_type: self.cp_type,
+            scs: self.scs,
+            fft_plan: Arc::new(Mutex::new(fft_plan)),
+            fft_input: Arc::new(Mutex::new(fft_input)),
+            fft_output: Arc::new(Mutex::new(fft_output)),
+            cp_lengths: self.cp_lengths.clone(),
         }
     }
 }

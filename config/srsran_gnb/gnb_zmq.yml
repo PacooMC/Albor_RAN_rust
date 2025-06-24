@@ -1,11 +1,12 @@
 # srsRAN Project gNB configuration for ZMQ with srsUE
-# Based on gnb_rf_b210_fdd_srsUE.yml adapted for ZMQ
+# Matches official srsRAN ZMQ tutorial configuration
+# Adapted for Albor multi-loopback Open5GS deployment
 
 cu_cp:
   amf:
-    addr: 10.53.1.2                 # AMF address in Open5GS network
+    addr: 127.0.0.4                 # AMF address (multi-loopback setup)
     port: 38412                     # AMF NGAP port  
-    bind_addr: 10.53.1.50           # gNB bind address (container IP in Open5GS network)
+    bind_addr: 127.0.0.11           # gNB bind address (multi-loopback setup)
     supported_tracking_areas:
       - tac: 7
         plmn_list:
@@ -17,8 +18,8 @@ ru_sdr:
   device_driver: zmq
   device_args: tx_port=tcp://127.0.0.1:2000,rx_port=tcp://127.0.0.1:2001,base_srate=23.04e6
   srate: 23.04
-  tx_gain: 80
-  rx_gain: 40
+  tx_gain: 75                       # Match srsRAN tutorial
+  rx_gain: 75                       # Match srsRAN tutorial
 
 cell_cfg:
   dl_arfcn: 368500                  # DL ARFCN for band 3
@@ -29,18 +30,21 @@ cell_cfg:
   tac: 7                            # TAC matching AMF
   pci: 1                            # Physical Cell ID
   
-  # PDCCH configuration for srsUE compatibility
+  # PDCCH configuration per srsRAN tutorial
   pdcch:
+    common:
+      ss0_index: 0
+      coreset0_index: 13            # CORESET#0 index for band 3, 20 MHz
     dedicated:
       ss2_type: common
       dci_format_0_1_and_1_1: false
-    common:
-      ss0_index: 0
-      coreset0_index: 12            # CORESET#0 index for band 3
   
-  # PRACH configuration
+  # PRACH configuration per srsRAN tutorial
   prach:
     prach_config_index: 1           # FDD PRACH configuration
+    total_nof_ra_preambles: 64      # From srsRAN tutorial
+    nof_ssb_per_ro: 1               # From srsRAN tutorial
+    nof_cb_preambles_per_ssb: 64    # From srsRAN tutorial
     
   # MCS tables for srsUE
   pdsch:

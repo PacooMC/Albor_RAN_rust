@@ -1,0 +1,72 @@
+# srsRAN gNodeB Configuration - 10 MHz (DEFINITIVE)
+# This is the proven working configuration that achieved RRC connection
+# Band 3, 10 MHz bandwidth, 11.52 MHz sample rate
+
+cu_cp:
+  amf:
+    addr: 127.0.0.4                # AMF on loopback interface
+    port: 38412                     # AMF NGAP port
+    bind_addr: 127.0.0.1           # gNodeB bind address
+    supported_tracking_areas:
+      - tac: 7
+        plmn_list:
+          - plmn: "00101"
+            tai_slice_support_list:
+              - sst: 1
+  inactivity_timer: 7200
+
+cu_up:
+  gtpu_bind_addr: 127.0.0.1        # GTP-U bind address
+  gtpu_ext_addr: 127.0.0.1
+
+ru_sdr:
+  device_driver: zmq
+  device_args: tx_port=tcp://127.0.0.1:2000,rx_port=tcp://127.0.0.1:2001,base_srate=11.52e6
+  srate: 11.52                      # 11.52 MHz sample rate for 10 MHz bandwidth
+  tx_gain: 75                       # Tutorial tx gain
+  rx_gain: 75                       # Tutorial rx gain
+
+cell_cfg:
+  dl_arfcn: 368500                  # DL ARFCN for band 3 (1842.5 MHz)
+  band: 3                           # Band 3 (1800 MHz FDD)
+  channel_bandwidth_MHz: 10         # 10 MHz bandwidth (52 PRBs)
+  common_scs: 15                    # 15 kHz subcarrier spacing
+  plmn: "00101"                     # PLMN matching AMF
+  tac: 7                            # TAC matching AMF
+  pci: 1                            # Physical Cell ID
+  
+  pdcch:
+    common:
+      ss0_index: 0                  # Search space 0 index
+      coreset0_index: 6             # CORESET#0 index for band 3, 10 MHz
+    dedicated:
+      ss2_type: common              # Search space type
+      dci_format_0_1_and_1_1: false
+  
+  prach:
+    prach_config_index: 1           # FDD PRACH configuration
+    prach_root_sequence_index: 1    # Root sequence index
+    zero_correlation_zone: 0        # Zero correlation zone
+    prach_frequency_start: 1        # PRACH frequency start (adjusted for 10 MHz)
+    
+  pdsch:
+    mcs_table: qam64               # Modulation table
+    
+  pusch:
+    mcs_table: qam64               # Modulation table
+
+log:
+  filename: /tmp/gnb.log
+  all_level: info
+  phy_level: info                  # PHY layer logging
+  mac_level: info                  # MAC layer logging
+  rlc_level: info                  # RLC layer logging
+  pdcp_level: info                 # PDCP layer logging
+  rrc_level: info                  # RRC layer logging
+  ngap_level: info                 # NGAP layer logging
+
+pcap:
+  mac_enable: true                 # Enable MAC PCAP
+  mac_filename: /tmp/gnb_mac.pcap
+  ngap_enable: true                # Enable NGAP PCAP
+  ngap_filename: /tmp/gnb_ngap.pcap

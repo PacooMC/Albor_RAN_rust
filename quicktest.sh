@@ -1,4 +1,22 @@
 #!/bin/bash
+# quicktest.sh - Quick test runner for Albor gNodeB
+
+# Ensure container has proper capabilities
+if [ ! -f /.dockerenv ]; then
+    # Running outside container - ensure container has capabilities
+    if docker ps | grep -q albor-gnb-dev; then
+        # Check if container has NET_ADMIN capability
+        if ! docker exec albor-gnb-dev capsh --print 2>/dev/null | grep -q "cap_net_admin"; then
+            echo "WARNING: Container doesn't have NET_ADMIN capability!"
+            echo "Please restart the container with: ./scripts/docker_run_with_caps.sh"
+            exit 1
+        fi
+    else
+        echo "Container not running. Starting with proper capabilities..."
+        ./scripts/docker_run_with_caps.sh
+    fi
+fi
+
 # Albor Space 5G GNodeB Quick Test Script
 # This script orchestrates testing by calling the appropriate test script
 # MUST follow test methodology: ONLY test_srsran.sh and test_albor.sh allowed

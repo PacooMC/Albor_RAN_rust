@@ -40,8 +40,8 @@ impl PssGenerator {
         
         // Default amplitude: 1.0 (0 dB) - matches srsRAN default
         // In srsRAN, PSS can be 0 dB or 3 dB higher than SSS
-        // We'll use 6 dB for better detection with ZMQ interface
-        let amplitude = 10.0_f32.powf(6.0 / 20.0); // 6 dB = ~2.0
+        // We'll use 3 dB to match srsRAN default for proper detection
+        let amplitude = 10.0_f32.powf(3.0 / 20.0); // 3 dB = ~1.414
         
         Ok(Self {
             pci,
@@ -226,7 +226,8 @@ fn generate_pss_sequence(nid2: u8) -> Vec<Complex32> {
     
     // Generate BPSK modulated sequence with cyclic shift applied during output
     // This matches srsRAN's approach exactly
-    let amplitude = 1.0;  // Full scale amplitude
+    // Match srsRAN implementation - no scaling at generation
+    let amplitude = 1.0;  // Match srsRAN implementation - no scaling at generation
     for n in 0..PSS_LENGTH {
         // Apply cyclic shift when reading from m-sequence (srsRAN approach)
         let m = (n + m_shift) % PSS_LENGTH;
@@ -311,8 +312,10 @@ fn generate_sss_base_sequences() -> (Vec<f32>, Vec<f32>) {
     info!("SSS x0 sequence (first 20 bits): {}", x0_debug);
     
     // Modulate M sequence to create d0
+    // Match srsRAN implementation - no scaling at generation
+    let amplitude = 1.0;  // Match srsRAN implementation - no scaling at generation
     for i in 0..SSS_LENGTH {
-        sequence0.push(1.0 - 2.0 * x0[i] as f32);
+        sequence0.push(amplitude * (1.0 - 2.0 * x0[i] as f32));
     }
     
     // Initialize M sequence x1
@@ -341,8 +344,10 @@ fn generate_sss_base_sequences() -> (Vec<f32>, Vec<f32>) {
     info!("SSS x1 sequence (first 20 bits): {}", x1_debug);
     
     // Modulate M sequence to create d1
+    // Match srsRAN implementation - no scaling at generation
+    let amplitude = 1.0;  // Match srsRAN implementation - no scaling at generation
     for i in 0..SSS_LENGTH {
-        sequence1.push(1.0 - 2.0 * x1[i] as f32);
+        sequence1.push(amplitude * (1.0 - 2.0 * x1[i] as f32));
     }
     
     (sequence0, sequence1)

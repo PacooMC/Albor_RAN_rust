@@ -35,3 +35,11 @@ fftw.workspace = true  # For high-performance FFT operations
 # Using tokio for async networking with raw socket support
 libc = "0.2"  # For SCTP raw socket support
 sctp-rs = "0.3.1"  # Modern SCTP socket bindings
+
+[features]
+default = []
+flexran = ["flexran-sys"]
+
+[dependencies.flexran-sys]
+path = "../interfaces/flexran-sys"
+optional = true

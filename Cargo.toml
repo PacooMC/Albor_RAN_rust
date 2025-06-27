@@ -4,6 +4,7 @@ members = [
     "layers",
     "interfaces",
     "common",
+    "interfaces/flexran-sys",
 ]
 resolver = "2"
 

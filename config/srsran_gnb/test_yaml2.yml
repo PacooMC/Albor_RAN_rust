@@ -1,0 +1,22 @@
+# Test YAML configuration with cu_cp structure
+cu_cp:
+  amf:
+    addr: 127.0.0.4
+    port: 38412
+    bind_addr: 127.0.0.1
+
+ru_sdr:
+  device_driver: zmq
+  device_args: tx_port=tcp://127.0.0.1:2000,rx_port=tcp://127.0.0.1:2001,base_srate=11.52e6
+  srate: 11.52
+  tx_gain: 75
+  rx_gain: 75
+
+cell_cfg:
+  dl_arfcn: 368500
+  band: 3
+  channel_bandwidth_MHz: 10
+  common_scs: 15
+  plmn: "00101"
+  tac: 7
+  pci: 1

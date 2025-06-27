@@ -1,0 +1,35 @@
+# Minimal srsRAN gNodeB configuration for PHY testing
+# No AMF/core network required - just basic cell transmission
+
+# RF configuration for ZMQ interface
+ru_sdr:
+  device_driver: zmq
+  device_args: tx_port=tcp://127.0.0.1:2000,rx_port=tcp://127.0.0.1:2001,base_srate=11.52e6
+  srate: 11.52                      # 11.52 MHz sample rate for 10 MHz bandwidth
+  tx_gain: 75
+  rx_gain: 75
+
+# Basic cell configuration
+cell_cfg:
+  dl_arfcn: 368500                  # DL ARFCN for band 3 (1842.5 MHz)
+  band: 3                           # Band 3 (1800 MHz FDD)
+  channel_bandwidth_MHz: 10         # 10 MHz bandwidth (52 PRBs)
+  common_scs: 15                    # 15 kHz subcarrier spacing
+  pci: 1                            # Physical Cell ID
+  
+  # PDCCH configuration required for basic operation
+  pdcch:
+    common:
+      ss0_index: 0                  # Search space 0 index
+      coreset0_index: 6             # CORESET#0 index for band 3, 10 MHz
+
+# Logging configuration
+log:
+  filename: /tmp/gnb.log
+  all_level: info
+  phy_level: debug                  # Enable detailed PHY logging
+
+# Enable MAC layer pcap for debugging
+pcap:
+  mac_enable: true
+  mac_filename: /tmp/gnb_mac.pcap

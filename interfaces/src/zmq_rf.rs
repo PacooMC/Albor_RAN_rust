@@ -233,10 +233,8 @@ impl ZmqRfDriver {
         
         // Initialize circular buffer (like srsRAN)
         let circular_buffer_size = config.ring_buffer_size;
-        let mut tx_circular_buffer = Vec::with_capacity(circular_buffer_size);
-        for _ in 0..circular_buffer_size {
-            tx_circular_buffer.push(IqBuffer::new(config.buffer_size, 0));
-        }
+        // Start with empty buffer - will grow as samples are added
+        let tx_circular_buffer = Vec::with_capacity(circular_buffer_size);
         
         Ok(Self {
             config,
@@ -371,21 +369,69 @@ impl ZmqRfDriver {
             .ok_or(InterfaceError::NotInitialized)?;
         
         // Try to get data from circular buffer (like srsRAN)
-        let buffer = self.get_tx_samples_from_circular_buffer().await;
+        let mut buffer = self.get_tx_samples_from_circular_buffer().await;
         
-        if let Some(buffer) = buffer {
+        if let Some(ref mut buffer) = buffer {
+            // DEBUG: Check signal power BEFORE tx_gain
+            let non_zero_count = buffer.samples.iter().filter(|s| s.norm() > 0.0).count();
+            if non_zero_count > 0 {
+                let avg_power_before: f32 = buffer.samples.iter().map(|s| s.norm_sqr()).sum::<f32>() / buffer.samples.len() as f32;
+                let peak_before = buffer.samples.iter().map(|s| s.norm()).fold(0.0_f32, f32::max);
+                let avg_power_db_before = 10.0 * avg_power_before.log10();
+                let peak_db_before = 20.0 * peak_before.log10();
+                
+                info!("TX GAIN DEBUG: Signal BEFORE tx_gain application:");
+                info!("  Average power: {:.3} ({:.1} dB)", avg_power_before, avg_power_db_before);
+                info!("  Peak amplitude: {:.3} ({:.1} dB)", peak_before, peak_db_before);
+                info!("  Configured tx_gain: {} dB", self.config.tx_gain);
+                
+                // CRITICAL FIX: Apply TX gain to samples!
+                if self.config.tx_gain != 0.0 {
+                    let actual_gain_db = self.config.tx_gain.min(30.0);
+                    let gain_linear = 10.0_f32.powf(actual_gain_db / 20.0);
+                    info!("  Applying TX gain: {} dB (limited to {} dB, linear factor: {})", 
+                          self.config.tx_gain, actual_gain_db, gain_linear);
+                    
+                    for sample in buffer.samples.iter_mut() {
+                        *sample *= gain_linear;
+                    }
+                    
+                    // Apply clipping to prevent saturation (like real hardware AGC)
+                    let clip_threshold = 0.95;  // Leave some headroom
+                    let mut clipped_count = 0;
+                    for sample in buffer.samples.iter_mut() {
+                        let magnitude = sample.norm();
+                        if magnitude > clip_threshold {
+                            *sample = *sample * (clip_threshold / magnitude);
+                            clipped_count += 1;
+                        }
+                    }
+                    
+                    // Check signal power AFTER tx_gain and clipping
+                    let avg_power_after: f32 = buffer.samples.iter().map(|s| s.norm_sqr()).sum::<f32>() / buffer.samples.len() as f32;
+                    let peak_after = buffer.samples.iter().map(|s| s.norm()).fold(0.0_f32, f32::max);
+                    let avg_power_db_after = 10.0 * avg_power_after.log10();
+                    let peak_db_after = 20.0 * peak_after.log10();
+                    
+                    info!("  Signal AFTER tx_gain application:");
+                    info!("  Average power: {:.3} ({:.1} dB)", avg_power_after, avg_power_db_after);
+                    info!("  Peak amplitude: {:.3} ({:.1} dB)", peak_after, peak_db_after);
+                    info!("  Power increase: {:.1} dB", avg_power_db_after - avg_power_db_before);
+                    
+                    if clipped_count > 0 {
+                        info!("  Clipped {} samples ({:.1}%) to prevent saturation", 
+                              clipped_count, 100.0 * clipped_count as f32 / buffer.samples.len() as f32);
+                    }
+                } else {
+                    info!("  No TX gain applied (tx_gain = 0 dB)");
+                }
+            }
+            
             // Convert to srsRAN format (raw cf_t samples)
             let bytes = iq_buffer_to_bytes(&buffer);
             
-            // DEBUG: Check if we have non-zero samples
-            let non_zero_count = buffer.samples.iter().filter(|s| s.norm() > 0.0).count();
+            // Final debug info
             if non_zero_count > 0 {
-                // Calculate signal statistics
-                let avg_power: f32 = buffer.samples.iter().map(|s| s.norm_sqr()).sum::<f32>() / buffer.samples.len() as f32;
-                let peak_power: f32 = buffer.samples.iter().map(|s| s.norm_sqr()).fold(0.0, f32::max);
-                let avg_power_db = 10.0 * avg_power.log10();
-                let peak_power_db = 10.0 * peak_power.log10();
-                
                 // Show first few non-zero samples
                 let first_samples: Vec<String> = buffer.samples.iter()
                     .take(10)
@@ -396,10 +442,8 @@ impl ZmqRfDriver {
                 
                 info!("TX: Sending {} samples ({} non-zero), timestamp={}", 
                       buffer.samples.len(), non_zero_count, buffer.timestamp);
-                info!("TX: Signal power: avg={:.3} ({:.1} dB), peak={:.3} ({:.1} dB)",
-                      avg_power, avg_power_db, peak_power, peak_power_db);
                 if !first_samples.is_empty() {
-                    info!("TX: First non-zero samples: {}", first_samples.join(", "));
+                    info!("TX: First non-zero samples after gain: {}", first_samples.join(", "));
                 }
                 info!("TX: Byte size: {} bytes", bytes.len());
             }
@@ -425,23 +469,24 @@ impl ZmqRfDriver {
                 }
             }
         } else {
-            // No data available, send zeros (underrun)
-            let zero_buffer = IqBuffer::new(self.config.buffer_size, 0);
-            let bytes = iq_buffer_to_bytes(&zero_buffer);
+            // CRITICAL FIX: When no data is available, DON'T send anything
+            // This matches srsRAN behavior - they return without sending when buffer is empty
+            // This keeps the REQ-REP request pending until real data is available
+            // The UE will wait for the response, which is the correct behavior
             
-            match tx_socket.send(&bytes, 0) {
-                Ok(_) => {
-                    warn!("TX: Sent {} zero samples (underrun) - no data in circular buffer!", zero_buffer.samples.len());
-                    let mut stats = self.stats.write().await;
-                    stats.tx_underruns += 1;
-                    *self.tx_state.write().await = TxState::WaitingForRequest;
-                    Ok(())
-                }
-                Err(e) => {
-                    error!("Failed to send zero samples: {}", e);
-                    Err(InterfaceError::ZmqError(e))
+            // Log this state periodically for debugging
+            static mut NO_DATA_COUNT: u64 = 0;
+            unsafe {
+                NO_DATA_COUNT += 1;
+                if NO_DATA_COUNT % 10000 == 1 {
+                    debug!("TX: No data available, keeping request pending (count: {})", NO_DATA_COUNT);
                 }
             }
+            
+            // Keep the state as RequestReceived so we'll try again next time
+            // This is the key - we don't transition back to WaitingForRequest
+            // until we actually send data
+            Ok(())
         }
     }
     
@@ -452,17 +497,51 @@ impl ZmqRfDriver {
         let write_idx = *self.tx_circular_write_idx.read().await;
         
         // Check if buffer is empty
-        if read_idx == write_idx {
-            trace!("TX circular buffer empty: read={}, write={}", read_idx, write_idx);
+        if circular_buffer.is_empty() {
+            trace!("TX circular buffer empty: no buffers");
+            return None;
+        }
+        
+        // CRITICAL FIX: During growth phase, read_idx might equal write_idx but buffer has data
+        // Only consider empty if we're in steady state and indices match
+        if circular_buffer.len() >= self.config.ring_buffer_size && read_idx == write_idx {
+            // In steady state, matching indices means we've consumed all data
+            trace!("TX circular buffer empty: read={} == write={} (steady state)", read_idx, write_idx);
+            return None;
+        }
+        
+        // Bounds check before accessing
+        if read_idx >= circular_buffer.len() {
+            warn!("TX circular buffer read index {} out of bounds (size={})", read_idx, circular_buffer.len());
             return None;
         }
         
         // Get buffer at read index
         let buffer = circular_buffer[read_idx].clone();
         
-        // Always advance read index to prevent stalling
+        // DEBUG: Log what we're reading
+        let non_zero = buffer.samples.iter().filter(|s| s.norm() > 0.0).count();
+        if non_zero > 0 {
+            let avg_power: f32 = buffer.samples.iter().map(|s| s.norm_sqr()).sum::<f32>() / buffer.samples.len() as f32;
+            info!("TX circular buffer READ: index={}, power={:.1} dB, non_zero={}/{}", 
+                  read_idx, 10.0 * avg_power.log10(), non_zero, buffer.samples.len());
+        }
+        
+        // CRITICAL FIX: Only advance read index if there's more data available
         let mut read_idx_mut = self.tx_circular_read_idx.write().await;
-        *read_idx_mut = (*read_idx_mut + 1) % circular_buffer.len();
+        let current_read = *read_idx_mut;
+        let next_read = (current_read + 1) % circular_buffer.len();
+        
+        // Check if next position has valid data
+        // During growth phase: only advance if next position exists
+        // During steady state: always advance (circular)
+        if circular_buffer.len() >= self.config.ring_buffer_size || next_read < circular_buffer.len() {
+            *read_idx_mut = next_read;
+        } else {
+            // Buffer still growing and next position doesn't exist yet
+            // Keep read index at current position
+            info!("TX circular buffer: keeping read_idx at {} (buffer size={})", current_read, circular_buffer.len());
+        }
         drop(read_idx_mut);
         
         // Log buffer utilization
@@ -485,15 +564,36 @@ impl ZmqRfDriver {
         
         // DEBUG: Check buffer content
         let non_zero_count = buffer.samples.iter().filter(|s| s.norm() > 0.0).count();
-        debug!("transmit() called with {} non-zero samples out of {}", non_zero_count, buffer.samples.len());
+        if non_zero_count > 0 {
+            info!("ZmqRfDriver::transmit() adding {} non-zero samples to circular buffer", non_zero_count);
+        }
         
         // Add to circular buffer
         let mut circular_buffer = self.tx_circular_buffer.write().await;
         let mut write_idx = self.tx_circular_write_idx.write().await;
         let read_idx = *self.tx_circular_read_idx.read().await;
         
-        // Check if buffer is full
+        // DEBUG: Log what we're writing
+        let non_zero = buffer.samples.iter().filter(|s| s.norm() > 0.0).count();
+        if non_zero > 0 {
+            let avg_power: f32 = buffer.samples.iter().map(|s| s.norm_sqr()).sum::<f32>() / buffer.samples.len() as f32;
+            info!("TX circular buffer WRITE: power={:.1} dB, non_zero={}/{}", 
+                  10.0 * avg_power.log10(), non_zero, buffer.samples.len());
+        }
+        
+        // Handle circular buffer growth
+        if circular_buffer.len() < self.config.ring_buffer_size {
+            // Buffer not full yet, just append
+            circular_buffer.push(buffer.clone());
+            *write_idx = circular_buffer.len() - 1;
+            info!("TX circular buffer growing: {} buffers, write_idx={}", circular_buffer.len(), *write_idx);
+            return Ok(());
+        }
+        
+        // Buffer is full, use circular indexing
         let next_write_idx = (*write_idx + 1) % circular_buffer.len();
+            
+        // Check for buffer overflow
         if next_write_idx == read_idx {
             // Buffer overflow - implement overwrite strategy like real RF drivers
             // Move read pointer forward to make space (drop oldest sample)
@@ -509,12 +609,12 @@ impl ZmqRfDriver {
             unsafe {
                 OVERFLOW_COUNT += 1;
                 if OVERFLOW_COUNT % 1000 == 1 {
-                    warn!("TX circular buffer overflow #{} - dropping oldest samples", OVERFLOW_COUNT);
+                    warn!("TX circular buffer overflow #{} - dropping oldest samples (no UE connected?)", OVERFLOW_COUNT);
                 }
             }
         }
         
-        // Copy samples to circular buffer
+        // Copy samples to circular buffer slot
         circular_buffer[*write_idx] = buffer.clone();
         *write_idx = next_write_idx;
         
@@ -828,6 +928,7 @@ impl AsyncZmqRf {
         let cmd_tx = command_tx.clone();
         let worker_handle = tokio::spawn(async move {
             info!("ZMQ worker thread started, starting TX/RX processing immediately");
+            info!("ZMQ worker: tx_receiver channel ready, waiting for samples...");
             // Start processing immediately to avoid dropping SSB samples
             // The UE will connect when ready
             
@@ -846,17 +947,51 @@ impl AsyncZmqRf {
                 // Process ALL pending buffers without limit (like srsRAN)
                 while let Ok(buffer) = tx_receiver.try_recv() {
                     buffers_pending += 1;
+                    
+                    // Debug: Log what we received
+                    let non_zero_count = buffer.samples.iter().filter(|s| s.norm() > 0.0).count();
+                    if non_zero_count > 0 || buffers_processed == 0 {
+                        // Calculate signal power when received from PHY
+                        let avg_power: f32 = buffer.samples.iter().map(|s| s.norm_sqr()).sum::<f32>() / buffer.samples.len() as f32;
+                        let peak_amplitude = buffer.samples.iter().map(|s| s.norm()).fold(0.0_f32, f32::max);
+                        let avg_power_db = 10.0 * avg_power.log10();
+                        let peak_db = 20.0 * peak_amplitude.log10();
+                        
+                        info!("ZMQ worker: Received buffer from PHY with {} non-zero samples out of {}",
+                              non_zero_count, buffer.samples.len());
+                        info!("  Signal power at ZMQ worker: avg={:.3} ({:.1} dB), peak={:.3} ({:.1} dB)",
+                              avg_power, avg_power_db, peak_amplitude, peak_db);
+                    }
+                    
                     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                     if cmd_tx.send((ZmqCommand::Transmit(buffer), resp_tx)).await.is_err() {
+                        error!("ZMQ worker: Failed to send Transmit command!");
                         break;
                     }
-                    let _ = resp_rx.await; // Ignore result, buffer is now in circular buffer
+                    
+                    // Wait for result to ensure buffer was added to circular buffer
+                    match resp_rx.await {
+                        Ok(ZmqResponse::TransmitResult(Ok(_))) => {
+                            if buffers_processed == 0 {
+                                info!("ZMQ worker: Successfully added buffer to circular buffer");
+                            }
+                        }
+                        Ok(ZmqResponse::TransmitResult(Err(e))) => {
+                            error!("ZMQ worker: Failed to add buffer to circular buffer: {:?}", e);
+                        }
+                        Err(e) => {
+                            error!("ZMQ worker: Channel error: {:?}", e);
+                        }
+                        _ => {
+                            error!("ZMQ worker: Unexpected response type");
+                        }
+                    }
                     buffers_processed += 1;
                 }
                 
                 // Log if we processed many buffers
-                if buffers_processed > 100 {
-                    debug!("ZMQ worker: Processed {} buffers in one iteration", buffers_processed);
+                if buffers_processed > 0 {
+                    info!("ZMQ worker: Processed {} TX buffers in this iteration", buffers_processed);
                 }
                 
                 // CRITICAL: Always check for TX requests (like srsRAN)

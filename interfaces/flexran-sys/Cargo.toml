@@ -1,0 +1,18 @@
+[package]
+name = "flexran-sys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+num-complex.workspace = true
+libc = "0.2"
+
+[build-dependencies]
+cc = "1.0"
+pkg-config = "0.3"
+
+[features]
+default = []
+avx512 = []

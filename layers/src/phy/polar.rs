@@ -148,6 +148,10 @@ impl PolarCode {
         &self.block_interleaver
     }
     
+    pub fn get_n_log(&self) -> usize {
+        self.n_log
+    }
+    
     /// Generate block interleaver pattern for rate matching
     fn generate_block_interleaver(n: usize) -> Vec<usize> {
         let mut pattern = vec![0; n];

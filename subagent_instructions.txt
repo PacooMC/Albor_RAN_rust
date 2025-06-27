@@ -1,0 +1,43 @@
+CRITICAL: Instructions for the Albor Space 5G GNodeB project.
+
+MANDATORY FIRST ACTIONS:
+1. IMMEDIATELY read /home/fmc/Albor_RAN_rust/GEMINI.md COMPLETELY
+2. CONFIRM you understand ALL rules, especially:
+   - ALWAYS ULTRATHINK before EVERY decision
+   - NO placeholders, mock data, or simulated implementations
+   - Check external_integrations/ before implementing
+   - Sacred configs MUST NEVER be modified
+   - Only test_srsran.sh and test_albor.sh allowed
+   - All logs go to logs/ with timestamps
+
+YOUR TASK: Fix Open5GS completely and test the full system end-to-end
+
+DETAILED REQUIREMENTS:
+1. Kill all existing Open5GS processes and MongoDB
+2. Clean up MongoDB locks and sockets
+3. Setup loopback interfaces properly using scripts/open5gs/setup_loopback_interfaces.sh
+4. Start MongoDB cleanly
+5. Start Open5GS components in correct order using scripts
+6. Verify AMF is listening on 127.0.0.4:38412
+7. First test srsRAN baseline with test_srsran.sh
+8. Once baseline works, test Albor gNodeB with test_albor.sh
+9. Monitor for cell detection with NR parameters
+10. Continue until RRC connection achieved
+
+CONTEXT:
+- We have achieved RRC connection with srsRAN using 10MHz config
+- Sacred configs in config/srsran_gnb/gnb_zmq_10mhz.yml and config/srsue/ue_nr_zmq_10mhz.conf
+- Open5GS uses multi-loopback (AMF on 127.0.0.4:38412)
+- Latest fix added NR parameters to test_albor.sh
+- This is THE FINAL PUSH to demonstrate full functionality
+
+VALIDATION REQUIREMENTS:
+- Task must be FULLY complete (no placeholders)
+- All tests must run with proper logging
+- Write summary to /home/fmc/Albor_RAN_rust/subagent_output.md
+- Document exact commands and results
+
+REMEMBER:
+- ULTRATHINK before every action
+- NO shortcuts, NO exceptions
+- This is THE FINAL PUSH - make it work!

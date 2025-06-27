@@ -1,0 +1,32 @@
+# srsRAN gNodeB configuration for no-core mode (no AMF required)
+# Based on the sacred 10MHz configuration
+
+gnb_id: 1
+
+cu_cp:
+  amf:
+    no_core: true    # Run without AMF/Open5GS
+
+cell_cfg:
+  pci: 1
+  dl_arfcn: 368500
+  band: 3
+  common_scs: 15kHz
+  channel_bandwidth_MHz: 10
+  plmn: "00101"
+  tac: 7
+
+ru_sdr:
+  srate: 11.52
+  device_driver: zmq
+  device_args: tx_port=tcp://127.0.0.1:2000,rx_port=tcp://127.0.0.1:2001,base_srate=11.52e6
+  tx_gain: 75
+  rx_gain: 75
+
+log:
+  filename: /tmp/gnb.log
+  all_level: info
+
+pcap:
+  mac_enable: true
+  mac_filename: /tmp/gnb_mac.pcap

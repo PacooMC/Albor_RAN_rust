@@ -1,40 +1,48 @@
 # srsRAN Project gNB configuration for ZMQ with srsUE
-# Matches official srsRAN ZMQ tutorial configuration
-# Adapted for Albor multi-loopback Open5GS deployment
+# Configured for Docker all-in-one environment with localhost connections
+# Uses 10 MHz bandwidth configuration matching sacred configs
 
 cu_cp:
+  # Admission control parameters
+  max_nof_dus: 6                    # Maximum number of DU connections
+  max_nof_cu_ups: 6                 # Maximum number of CU-UP connections  
+  max_nof_ues: 8192                 # Maximum number of UEs
+  max_nof_drbs_per_ue: 8            # Maximum DRBs per UE
+  inactivity_timer: 7200            # UE inactivity timer in seconds (2 hours)
+  request_pdu_session_timeout: 2    # PDU session request timeout in seconds
+  
   amf:
-    addr: 127.0.0.4                 # AMF address (multi-loopback setup)
+    addr: 127.0.0.5                 # AMF address (Open5GS AMF is on 127.0.0.5)
     port: 38412                     # AMF NGAP port  
-    bind_addr: 127.0.0.11           # gNB bind address (multi-loopback setup)
+    bind_addr: 127.0.0.1           # gNB bind address (localhost)
     supported_tracking_areas:
-      - tac: 7
+      - tac: 1
         plmn_list:
-          - plmn: "00101"
+          - plmn: "99970"
             tai_slice_support_list:
               - sst: 1
 
 ru_sdr:
   device_driver: zmq
-  device_args: tx_port=tcp://127.0.0.1:2000,rx_port=tcp://127.0.0.1:2001,base_srate=23.04e6
-  srate: 23.04
+  device_args: tx_port=tcp://127.0.0.1:2000,rx_port=tcp://127.0.0.1:2001,base_srate=11.52e6
+  srate: 11.52                      # 11.52 MHz sample rate for 10 MHz bandwidth
   tx_gain: 75                       # Match srsRAN tutorial
   rx_gain: 75                       # Match srsRAN tutorial
 
 cell_cfg:
   dl_arfcn: 368500                  # DL ARFCN for band 3
   band: 3                           # Band 3 (1800 MHz FDD)
-  channel_bandwidth_MHz: 20         # 20 MHz bandwidth 
+  channel_bandwidth_MHz: 10         # 10 MHz bandwidth (52 PRBs)
   common_scs: 15                    # 15 kHz subcarrier spacing
-  plmn: "00101"                     # PLMN matching AMF
-  tac: 7                            # TAC matching AMF
+  plmn: "99970"                     # PLMN matching AMF
+  tac: 1                            # TAC matching AMF
   pci: 1                            # Physical Cell ID
   
-  # PDCCH configuration per srsRAN tutorial
+  # PDCCH configuration for 10 MHz
   pdcch:
     common:
       ss0_index: 0
-      coreset0_index: 13            # CORESET#0 index for band 3, 20 MHz
+      coreset0_index: 6             # CORESET#0 index for band 3, 10 MHz
     dedicated:
       ss2_type: common
       dci_format_0_1_and_1_1: false
@@ -42,9 +50,12 @@ cell_cfg:
   # PRACH configuration per srsRAN tutorial
   prach:
     prach_config_index: 1           # FDD PRACH configuration
-    total_nof_ra_preambles: 64      # From srsRAN tutorial
-    nof_ssb_per_ro: 1               # From srsRAN tutorial
-    nof_cb_preambles_per_ssb: 64    # From srsRAN tutorial
+    prach_root_sequence_index: 1    # Root sequence index
+    zero_correlation_zone: 0        # Zero correlation zone
+    prach_frequency_start: 1        # PRACH frequency start (adjusted for 10 MHz)
+    preamble_received_target_power: -100  # Target power for PRACH detection
+    preamble_trans_max: 7           # Maximum preamble transmissions
+    power_ramping_step: 4           # Power ramping step in dB
     
   # MCS tables for srsUE
   pdsch:
@@ -53,11 +64,25 @@ cell_cfg:
     mcs_table: qam64
 
 log:
-  filename: /tmp/gnb.log
+  filename: /workspace/logs/gnb.log
   all_level: info
+  phy_level: debug                  # Enable PHY debug to see PRACH
+  mac_level: debug                  # Enable MAC debug
 
 pcap:
-  mac_enable: enable
-  mac_filename: /tmp/gnb_mac.pcap
-  ngap_enable: enable
-  ngap_filename: /tmp/gnb_ngap.pcap
+  mac_enable: true
+  mac_filename: /workspace/logs/gnb_mac.pcap
+  ngap_enable: true
+  ngap_filename: /workspace/logs/gnb_ngap.pcap
+
+# Expert PHY configuration for better PRACH detection
+expert_phy:
+  pusch_max_its: 10                 # Max turbo decoder iterations
+  prach_enable: true                # Enable PRACH
+  pdsch_csi_enabled: true           # Enable CSI
+  pusch_meas_time_en: true          # Enable PUSCH time measurements
+  
+# MAC configuration
+mac_pcap:
+  enable: true
+  filename: /workspace/logs/gnb_mac_pcap.pcap

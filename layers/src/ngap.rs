@@ -10,8 +10,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::time::Duration;
-use sctp_rs::{Socket, SocketToAssociation, ConnectedSocket};
-use sctp_rs::{SendData, SendInfo};
+use sctp_rs::ConnectedSocket;
+use sctp_rs::SendData;
 
 /// NGAP layer configuration
 pub struct NgapConfig {

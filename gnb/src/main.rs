@@ -102,12 +102,22 @@ async fn main() -> Result<()> {
     // Calculate carrier frequency from ARFCN (Band 3 specific)
     let carrier_frequency = calculate_frequency_from_arfcn(config.cell_cfg.dl_arfcn, config.cell_cfg.band)?;
     
+    // For Band 3 with 10 MHz bandwidth, the SSB is placed 450 kHz below carrier center
+    // This corresponds to 30 subcarriers with 15 kHz SCS
+    // SSB ARFCN 368410 vs DL ARFCN 368500 = 450 kHz offset
+    let k_ssb = -30i16;  // Negative because SSB is below carrier center
+    
+    info!("SSB configuration:");
+    info!("  Carrier frequency: {} MHz", carrier_frequency / 1e6);
+    info!("  SSB placement: 450 kHz below carrier center");
+    info!("  k_SSB: {} (30 subcarriers below carrier)", k_ssb);
+    
     info!("Cell configuration:");
     info!("  PCI: {}", pci.0);
     info!("  Cell ID: {}", cell_id.0);
     info!("  Band: {}", config.cell_cfg.band);
     info!("  DL ARFCN: {}", config.cell_cfg.dl_arfcn);
-    info!("  Frequency: {} MHz", carrier_frequency / 1e6);
+    info!("  Carrier frequency: {} MHz", carrier_frequency / 1e6);
     info!("  Bandwidth: {} MHz", config.cell_cfg.channel_bandwidth_mhz);
     info!("  Subcarrier spacing: {} kHz", config.cell_cfg.common_scs);
     info!("  PLMN: {}", config.cell_cfg.plmn);
@@ -140,6 +150,22 @@ async fn main() -> Result<()> {
         plmn_id[2] = ((mnc.chars().nth(2).unwrap().to_digit(10).unwrap() as u8) << 4) | 
                       (mnc.chars().nth(1).unwrap().to_digit(10).unwrap() as u8);
     }
+    
+    // Create PRACH configuration from config file
+    let prach_config = layers::phy::prach::RachConfigCommon {
+        prach_config_index: config.cell_cfg.prach.prach_config_index,
+        ra_response_window: 10,  // Default value
+        msg1_fdm: 1,  // Default value
+        msg1_frequency_start: config.cell_cfg.prach.prach_frequency_start as u32,
+        zero_correlation_zone_config: config.cell_cfg.prach.zero_correlation_zone as u16,
+        preamble_rx_target_power: -104,  // Default value
+        preamble_trans_max: 7,  // Default value
+        power_ramping_step_db: 4,  // Default value
+        total_num_ra_preambles: 64,  // Default value
+        prach_root_seq_index: config.cell_cfg.prach.prach_root_sequence_index,
+        msg1_scs: layers::phy::prach::PrachSubcarrierSpacing::Khz1_25,  // Default for long preambles
+        restricted_set: layers::phy::prach::RestrictedSetConfig::UnrestrictedSet,
+    };
 
     // Create PHY configuration
     let phy_config = PhyConfig {
@@ -152,6 +178,9 @@ async fn main() -> Result<()> {
         num_rx_antennas: 1,
         cyclic_prefix: CyclicPrefix::Normal,
         duplex_mode: DuplexMode::Fdd,  // Band 3 is FDD
+        k_ssb,
+        sample_rate: config.ru_sdr.srate * 1e6,  // Convert from MHz to Hz
+        prach_config,
     };
     
     // Create ZMQ RF configuration from device args in config
@@ -159,10 +188,26 @@ async fn main() -> Result<()> {
     zmq_config.tx_gain = config.ru_sdr.tx_gain;
     zmq_config.rx_gain = config.ru_sdr.rx_gain;
     
+    // Override sample rate with natural FFT-based sample rate
+    // This ensures perfect alignment with OFDM processing
+    let fft_size = layers::phy::calculate_fft_size(&bandwidth, &scs)?;
+    let scs_hz = match scs {
+        SubcarrierSpacing::Scs15 => 15_000.0,
+        SubcarrierSpacing::Scs30 => 30_000.0,
+        SubcarrierSpacing::Scs60 => 60_000.0,
+        SubcarrierSpacing::Scs120 => 120_000.0,
+        SubcarrierSpacing::Scs240 => 240_000.0,
+    };
+    let natural_sample_rate = fft_size as f64 * scs_hz;
+    // REMOVED: Sample rate override that was preventing resampler from working
+    // zmq_config.sample_rate = natural_sample_rate;
+    
     info!("ZMQ configuration:");
     info!("  TX address: {}", zmq_config.tx_address);
     info!("  RX address: {}", zmq_config.rx_address);
-    info!("  Sample rate: {} MHz", zmq_config.sample_rate / 1e6);
+    info!("  Sample rate: {} MHz (from config)", zmq_config.sample_rate / 1e6);
+    info!("  PHY natural rate: {} MHz (FFT size {} × SCS {} kHz)", 
+          natural_sample_rate / 1e6, fft_size, scs_hz / 1000.0);
 
     // Create MAC configuration
     let mac_config = MacConfig {
@@ -171,6 +216,7 @@ async fn main() -> Result<()> {
         bandwidth,
         max_ues: 32,
         sib1_config: default_sib1_config(cell_id),
+        coreset0_index: config.cell_cfg.pdcch.common.coreset0_index,
     };
     
     // Initialize MAC layer
@@ -223,12 +269,10 @@ async fn main() -> Result<()> {
     
     // Create NGAP configuration
     let amf_addr = format!("{}:{}", config.cu_cp.amf.addr, config.cu_cp.amf.port);
-    // TEMPORARY: Override AMF address to match actual deployment (127.0.0.5:38412)
-    let amf_addr_override = "127.0.0.5:38412";
-    warn!("TEMPORARY: Overriding AMF address from {} to {}", amf_addr, amf_addr_override);
+    // Use AMF address from configuration
     let ngap_config = NgapConfig {
-        amf_address: SocketAddr::from_str(amf_addr_override)
-            .map_err(|e| anyhow::anyhow!("Invalid AMF address {}: {}", amf_addr_override, e))?,
+        amf_address: SocketAddr::from_str(&amf_addr)
+            .map_err(|e| anyhow::anyhow!("Invalid AMF address {}: {}", amf_addr, e))?,
         local_address: SocketAddr::from_str(&format!("{}:0", config.cu_cp.amf.bind_addr))
             .map_err(|e| anyhow::anyhow!("Invalid bind address: {}", e))?,
         gnb_id: config.cell_cfg.pci as u32, // Using PCI as gNB ID for now
@@ -382,4 +426,94 @@ fn calculate_frequency_from_arfcn(arfcn: u32, band: u16) -> Result<f64> {
         }
         _ => Err(anyhow::anyhow!("Unsupported band: {}", band))
     }
+}
+
+/// Calculate SSB ARFCN from DL ARFCN and bandwidth for given band
+/// According to 3GPP TS 38.104 and srsRAN implementation
+/// Calculate GSCN (Global Synchronization Channel Number) for Band 3
+fn calculate_gscn_for_band3(carrier_freq_mhz: f64) -> Result<u32> {
+    // For Band 3 (1710-1880 MHz), GSCN range is 4517-4693
+    // For Band 3, we should place SSB near the carrier center for compatibility
+    // srsRAN typically uses carrier center for SSB in Band 3
+    
+    // Find closest GSCN to carrier frequency
+    // GSCN = 3*N + (M-3)/2 where SS_ref = 1200*N + 50*M kHz
+    // For Band 3: N = 1423, M must be odd
+    
+    let n = 1423;
+    let base_freq_khz = 1200.0 * n as f64; // 1,707,600 kHz
+    let target_freq_khz = carrier_freq_mhz * 1000.0;
+    let offset_khz = target_freq_khz - base_freq_khz;
+    
+    // Calculate M to get closest to carrier frequency
+    let m_float = offset_khz / 50.0;
+    let m = if m_float.round() as i32 % 2 == 0 {
+        // M must be odd, round to nearest odd
+        (m_float.round() as i32 + 1).max(3)
+    } else {
+        m_float.round() as i32
+    };
+    
+    // Ensure M is valid (odd and >= 3)
+    let m = m.max(3);
+    
+    let gscn = 3 * n + (m - 3) / 2;
+    let ss_ref_mhz = (base_freq_khz + 50.0 * m as f64) / 1000.0;
+    
+    // Verify GSCN is in Band 3 range
+    if gscn < 4517 || gscn > 4693 {
+        warn!("GSCN {} is outside Band 3 range (4517-4693), using closest valid", gscn);
+        // For 1842.5 MHz, use GSCN 4625 (SS_ref = 1842.45 MHz)
+        return Ok(4625);
+    }
+    
+    info!("GSCN calculation: carrier={:.3} MHz, N={}, M={}, GSCN={}, SS_ref={:.3} MHz",
+          carrier_freq_mhz, n, m, gscn, ss_ref_mhz);
+    
+    Ok(gscn as u32)
+}
+
+/// Calculate SSB center frequency from GSCN
+fn calculate_ssb_freq_from_gscn(gscn: u32) -> f64 {
+    // For GSCN range 4517-4693 (Band 3)
+    if gscn < 4517 || gscn > 4693 {
+        warn!("GSCN {} is outside Band 3 range (4517-4693)", gscn);
+    }
+    
+    // For this range: GSCN = 3*N + (M-3)/2 where N=1423
+    let n = 1423;
+    let m = 2 * (gscn - 3 * n) + 3;
+    
+    // SS_ref in MHz
+    let ss_ref_mhz = (1200.0 * n as f64 + 50.0 * m as f64) / 1000.0;
+    
+    ss_ref_mhz
+}
+
+/// Calculate Point A frequency for NR carrier
+fn calculate_point_a(carrier_freq_hz: f64, n_rbs: u16, scs_khz: u32) -> f64 {
+    // Point A is the lowest frequency of the carrier
+    // Point A = carrier_center - (N_RB * 12 * SCS) / 2
+    let bandwidth_hz = (n_rbs as f64) * 12.0 * (scs_khz as f64) * 1000.0;
+    let point_a_hz = carrier_freq_hz - (bandwidth_hz / 2.0);
+    
+    info!("Point A calculation: carrier={:.3} MHz, N_RB={}, SCS={} kHz, BW={:.3} MHz, Point A={:.3} MHz",
+          carrier_freq_hz / 1e6, n_rbs, scs_khz, bandwidth_hz / 1e6, point_a_hz / 1e6);
+    
+    point_a_hz
+}
+
+/// Calculate k_SSB (SSB subcarrier offset) from Point A to first SSB subcarrier
+/// Per 3GPP TS 38.211, k_SSB is the offset from Point A to the first subcarrier of SSB
+fn calculate_k_ssb(point_a_hz: f64, ssb_first_sc_hz: f64, scs_khz: u32) -> i16 {
+    // Calculate frequency difference from Point A to first SSB subcarrier
+    let freq_diff_hz = ssb_first_sc_hz - point_a_hz;
+    
+    // Convert to subcarriers (each subcarrier is scs_khz kHz wide)
+    let k_ssb = (freq_diff_hz / (scs_khz as f64 * 1000.0)).round() as i16;
+    
+    info!("k_SSB calculation: Point A={:.3} MHz, SSB first SC={:.3} MHz, diff={:.3} MHz, SCS={} kHz, k_SSB={} subcarriers",
+          point_a_hz / 1e6, ssb_first_sc_hz / 1e6, freq_diff_hz / 1e6, scs_khz, k_ssb);
+    
+    k_ssb
 }

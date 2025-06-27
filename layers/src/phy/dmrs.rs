@@ -75,24 +75,33 @@ pub struct DmrsSequenceGenerator {
 impl DmrsSequenceGenerator {
     /// Create new DMRS sequence generator with initialization value
     pub fn new(c_init: u32) -> Self {
-        let mut gen = Self {
-            x1: 1,
-            x2: c_init,
-        };
+        // Initialize x1 with all ones (2^31 - 1)
+        let mut x1 = 0x7FFFFFFF;
+        // Initialize x2 with c_init
+        let mut x2 = c_init & 0x7FFFFFFF;
         
-        // Advance LFSR by 1600 iterations as per 3GPP spec
+        // Advance LFSR by Nc=1600 iterations as per 3GPP spec
         for _ in 0..1600 {
-            gen.advance();
+            // x1 sequence: x1(n+31) = (x1(n+3) + x1(n)) mod 2
+            let x1_new = ((x1 >> 3) ^ x1) & 1;
+            x1 = ((x1 >> 1) | (x1_new << 30)) & 0x7FFFFFFF;
+            
+            // x2 sequence: x2(n+31) = (x2(n+3) + x2(n+2) + x2(n+1) + x2(n)) mod 2
+            let x2_new = ((x2 >> 3) ^ (x2 >> 2) ^ (x2 >> 1) ^ x2) & 1;
+            x2 = ((x2 >> 1) | (x2_new << 30)) & 0x7FFFFFFF;
         }
         
-        gen
+        Self { x1, x2 }
     }
     
     /// Advance LFSR state
     fn advance(&mut self) {
+        // x1 sequence: x1(n+31) = (x1(n+3) + x1(n)) mod 2
         let x1_new = ((self.x1 >> 3) ^ self.x1) & 1;
-        let x2_new = ((self.x2 >> 3) ^ (self.x2 >> 2) ^ (self.x2 >> 1) ^ self.x2) & 1;
         self.x1 = ((self.x1 >> 1) | (x1_new << 30)) & 0x7FFFFFFF;
+        
+        // x2 sequence: x2(n+31) = (x2(n+3) + x2(n+2) + x2(n+1) + x2(n)) mod 2
+        let x2_new = ((self.x2 >> 3) ^ (self.x2 >> 2) ^ (self.x2 >> 1) ^ self.x2) & 1;
         self.x2 = ((self.x2 >> 1) | (x2_new << 30)) & 0x7FFFFFFF;
     }
     
@@ -137,6 +146,28 @@ pub fn calculate_pdsch_dmrs_cinit(slot: u32, symbol: u8, n_id: u16, n_scid: bool
     let n_symb_slot = 14u32; // Normal CP
     let scid = if n_scid { 1 } else { 0 };
     ((1 << 17) * (n_symb_slot * slot + l + 1) * (2 * n_id as u32 + 1) + 2 * n_id as u32 + scid) & 0x7FFFFFFF
+}
+
+/// Calculate PBCH DMRS initialization value
+/// According to 3GPP TS 38.211 Section 7.4.1.4.1
+pub fn calculate_pbch_dmrs_cinit(n_id: u16, ssb_idx: u8, n_hf: u8, l_max: u8) -> u32 {
+    // Calculate i_ssb based on L_max
+    let i_ssb = if l_max == 4 {
+        // For L_max = 4: i_ssb = least 2 significant bits of SSB index + 4 * n_hf
+        ((ssb_idx & 0b11) as u32) + 4 * (n_hf as u32)
+    } else if l_max == 8 || l_max == 64 {
+        // For L_max = 8 or 64: i_ssb = least 3 significant bits of SSB index
+        (ssb_idx & 0b111) as u32
+    } else {
+        // Default to L_max = 4 behavior
+        ((ssb_idx & 0b11) as u32) + 4 * (n_hf as u32)
+    };
+    
+    // c_init = 2^11 * (i_ssb + 1) * (floor(N_ID/4) + 1) + 2^6 * (i_ssb + 1) + (N_ID mod 4)
+    let n_id_div_4 = (n_id / 4) as u32;
+    let n_id_mod_4 = (n_id % 4) as u32;
+    
+    (((i_ssb + 1) * (n_id_div_4 + 1)) << 11) + ((i_ssb + 1) << 6) + n_id_mod_4
 }
 
 /// Generate DMRS sequence for given resource blocks

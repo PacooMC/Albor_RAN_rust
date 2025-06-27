@@ -1,0 +1,3 @@
+[10:30:31] Starting Albor test (10 second duration)
+[10:30:31] Log directory: ./logs/20250626_103031_albor
+[10:30:31] Cleaning up previous runs...

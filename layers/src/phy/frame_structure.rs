@@ -114,46 +114,103 @@ impl FrameStructure {
     pub fn is_sync_slot(&self, frame: u32, slot: u8) -> bool {
         // SSB periodicity: typically 20ms for initial cell search
         // This means SSB is transmitted every 2 frames (20ms)
-        // For 15kHz SCS: 10 slots per frame, so SSB every 20 slots
-        // For 30kHz SCS: 20 slots per frame, so SSB every 40 slots
         
         let ssb_period_frames = 2; // 20ms period = 2 frames
         let frame_in_period = frame % ssb_period_frames;
         
-        // For band 3 (< 3 GHz), this is Case A
-        // SSB can be transmitted in slots 0, 1, 2, 3 within the SSB period
-        // We'll transmit SSB in all 4 slots for better detection
-        frame_in_period == 0 && slot < 4
+        // Only transmit SSB in even frames (every 20ms)
+        if frame_in_period != 0 {
+            return false;
+        }
+        
+        // For Case A with 15 kHz SCS:
+        // SSB #0: symbols 2-5 (in slot 0)
+        // SSB #1: symbols 8-11 (in slot 0)  
+        // SSB #2: symbols 16-19 (in slot 1)
+        // SSB #3: symbols 22-25 (in slot 1)
+        
+        // SSB blocks span across slots 0 and 1 only for Case A
+        matches!(slot, 0 | 1)
     }
     
     /// Check if this is a synchronization symbol
     pub fn is_sync_symbol(&self, frame: u32, slot: u8, symbol: u8) -> bool {
-        if !self.is_sync_slot(frame, slot) {
+        // SSB periodicity check
+        let ssb_period_frames = 2; // 20ms period = 2 frames
+        let frame_in_period = frame % ssb_period_frames;
+        if frame_in_period != 0 {
             return false;
         }
         
-        // PSS is in symbol 0, SSS is in symbol 2, PBCH is in symbols 1, 3
-        matches!(symbol, 0..=3)
+        // For Case A with 15 kHz SCS, check if this symbol is part of any SSB block
+        match (slot, symbol) {
+            // Slot 0: SSB #0 (symbols 2-5) and SSB #1 (symbols 8-11)
+            (0, 2..=5) => true,   // SSB #0
+            (0, 8..=11) => true,  // SSB #1
+            // Slot 1: SSB #2 (symbols 2-5) and SSB #3 (symbols 8-11)
+            (1, 2..=5) => true,   // SSB #2
+            (1, 8..=11) => true,  // SSB #3
+            _ => false,
+        }
     }
     
     /// Check if this is a PSS symbol
     pub fn is_pss_symbol(&self, symbol: u8) -> bool {
-        symbol == 0
+        // PSS is the first symbol of each SSB block
+        // For Case A: symbols 2, 8 within the slot
+        matches!(symbol, 2 | 8)
     }
     
     /// Check if this is an SSS symbol
     pub fn is_sss_symbol(&self, symbol: u8) -> bool {
-        symbol == 2
+        // SSS is the third symbol of each SSB block (PSS + 2)
+        // For Case A: symbols 4, 10 within the slot
+        matches!(symbol, 4 | 10)
     }
     
     /// Check if this is a PBCH symbol
     pub fn is_pbch_symbol(&self, frame: u32, slot: u8, symbol: u8) -> bool {
-        if !self.is_sync_slot(frame, slot) {
+        // SSB periodicity check
+        let ssb_period_frames = 2; // 20ms period = 2 frames
+        let frame_in_period = frame % ssb_period_frames;
+        if frame_in_period != 0 {
             return false;
         }
         
-        // PBCH is in symbols 1 and 3
-        matches!(symbol, 1 | 3)
+        // PBCH is in the 2nd and 4th symbols of each SSB block
+        // For Case A with 15 kHz SCS:
+        match (slot, symbol) {
+            // Slot 0: SSB #0 PBCH (symbols 3, 5) and SSB #1 PBCH (symbols 9, 11)
+            (0, 3 | 5 | 9 | 11) => true,
+            // Slot 1: SSB #2 PBCH (symbols 3, 5) and SSB #3 PBCH (symbols 9, 11)
+            (1, 3 | 5 | 9 | 11) => true,
+            _ => false,
+        }
+    }
+    
+    /// Get SSB index for given slot and symbol (Case A)
+    /// Returns None if not an SSB symbol
+    pub fn get_ssb_index(&self, slot: u8, symbol: u8) -> Option<u8> {
+        match (slot, symbol) {
+            // Slot 0: SSB #0 and SSB #1
+            (0, 2..=5) => Some(0),   // SSB #0
+            (0, 8..=11) => Some(1),  // SSB #1
+            // Slot 1: SSB #2 and SSB #3
+            (1, 2..=5) => Some(2),   // SSB #2
+            (1, 8..=11) => Some(3),  // SSB #3
+            _ => None,
+        }
+    }
+    
+    /// Get the first symbol of SSB block for given SSB index (Case A)
+    pub fn get_ssb_start_symbol(&self, ssb_index: u8) -> Option<u8> {
+        match ssb_index {
+            0 => Some(2),   // SSB #0 starts at symbol 2
+            1 => Some(8),   // SSB #1 starts at symbol 8
+            2 => Some(2),   // SSB #2 starts at symbol 2 (in slot 1)
+            3 => Some(8),   // SSB #3 starts at symbol 8 (in slot 1)
+            _ => None,
+        }
     }
     
     /// Get symbol type for TDD
@@ -187,21 +244,18 @@ impl FrameStructure {
     pub fn samples_per_symbol(&self, fft_size: usize, symbol_in_slot: u8) -> usize {
         let base_cp = match self.cyclic_prefix {
             super::CyclicPrefix::Normal => {
-                // Normal CP: first symbol has longer CP
-                if symbol_in_slot == 0 || symbol_in_slot == 7 {
-                    match self.slot_config.scs {
-                        SubcarrierSpacing::Scs15 => (fft_size * 160) / 2048,
-                        SubcarrierSpacing::Scs30 => (fft_size * 160) / 2048,
-                        SubcarrierSpacing::Scs60 => (fft_size * 160) / 2048,
-                        _ => (fft_size * 144) / 2048,
-                    }
+                // Normal CP: only first symbol of slot has longer CP
+                if symbol_in_slot == 0 {
+                    // Extended CP for first symbol - use ceiling for proper rounding
+                    ((fft_size as f32 * 160.0 / 2048.0).ceil()) as usize
                 } else {
-                    (fft_size * 144) / 2048
+                    // Normal CP for other symbols - use ceiling for proper rounding
+                    ((fft_size as f32 * 144.0 / 2048.0).ceil()) as usize
                 }
             }
             super::CyclicPrefix::Extended => {
                 // Extended CP: all symbols have same CP length
-                (fft_size * 512) / 2048
+                ((fft_size as f32 * 512.0 / 2048.0).ceil()) as usize
             }
         };
         

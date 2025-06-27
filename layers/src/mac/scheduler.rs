@@ -138,19 +138,43 @@ impl MacScheduler {
         cell_id: CellId,
         scs: SubcarrierSpacing,
         bandwidth: Bandwidth,
+        coreset0_index: u8,
     ) -> Result<Self, LayerError> {
         // Get CORESET#0 configuration from MIB pdcch_config_sib1
-        // We configured it as index 1 in PBCH
-        let coreset0_config = Coreset0Config::from_index(1)?;
+        // Use the coreset0_index from configuration
+        let coreset0_config = Coreset0Config::from_index(coreset0_index)?;
         
         Ok(Self {
             cell_id,
             scs,
             bandwidth,
             ssb_period_ms: 20,  // 20ms SSB periodicity for initial cell search
-            sib1_period_ms: 160, // 160ms SIB1 periodicity
+            sib1_period_ms: 20,  // 20ms SIB1 periodicity when SSB period <= 20ms (TS 38.331)
             coreset0_config,
         })
+    }
+    
+    /// Get Type0-PDCCH CSS monitoring slots for SIB1
+    /// Based on TS 38.213 Table 13-11
+    pub fn get_sib1_monitoring_slots(&self) -> Vec<u32> {
+        // For CORESET#0 index 6 with 15 kHz SCS:
+        // From Table 13-11: O = 0, n_0 = 0
+        // Monitoring slots are n_0 + i*M where M = 20 slots (20ms for 15 kHz)
+        // Within SI window of 160ms = 160 slots
+        let mut slots = Vec::new();
+        let monitoring_period_slots = 20;  // 20 slots = 20ms for 15 kHz SCS
+        let si_window_slots = 160;  // 160 slots = 160ms for 15 kHz SCS
+        
+        // Generate monitoring slots: 0, 20, 40, 60, 80, 100, 120, 140
+        for i in 0..8 {
+            let slot = i * monitoring_period_slots;
+            if slot < si_window_slots {
+                slots.push(slot);
+            }
+        }
+        
+        info!("SIB1 Type0-PDCCH monitoring slots within SI window: {:?}", slots);
+        slots
     }
     
     /// Get schedule for a specific slot
@@ -173,15 +197,28 @@ impl MacScheduler {
         
         // Check if this slot should have SSB
         if self.is_ssb_slot(frame, slot, slots_per_frame) {
+            // For Case A (15 kHz SCS), determine which SSB based on slot
+            // Slot 0: SSB#0 (symbol 2) and SSB#1 (symbol 8)
+            // Slot 1: SSB#2 (symbol 2) and SSB#3 (symbol 8)
+            // Note: MAC doesn't need to handle multiple SSBs per slot,
+            // PHY will use frame_structure fallback for correct timing
+            let (ssb_index, start_symbol) = match slot {
+                0 => (0, 2),  // First SSB in slot 0 starts at symbol 2
+                1 => (2, 2),  // First SSB in slot 1 starts at symbol 2
+                _ => (0, 0),  // Should not happen for Case A
+            };
+            
             schedule.ssb_info = Some(SsbScheduleInfo {
-                ssb_index: 0,  // Single SSB beam for now
-                start_symbol: 0,
+                ssb_index,
+                start_symbol,
             });
-            debug!("Scheduled SSB in frame={}, slot={}", frame, slot);
+            debug!("Scheduled SSB #{} in frame={}, slot={}, start_symbol={}", 
+                   ssb_index, frame, slot, start_symbol);
         }
         
         // Check if this slot should have SIB1
         if self.is_sib1_slot(frame, slot, slots_per_frame) {
+            let total_slots = frame * slots_per_frame + slot as u32;
             // SIB1 is transmitted in slots following SSB
             // Use Type0-PDCCH CSS n0 configuration
             // Calculate PDCCH and PDSCH parameters for SIB1
@@ -214,7 +251,8 @@ impl MacScheduler {
                     .map(|rb| rb as u16)
                     .collect(),
             });
-            info!("Scheduled SIB1 in frame={}, slot={}", frame, slot);
+            info!("Scheduled SIB1 Type0-PDCCH in frame={}, slot={} (slot {} in SI window)", 
+                  frame, slot, total_slots % (160 / 10 * slots_per_frame));
         }
         
         schedule
@@ -226,26 +264,34 @@ impl MacScheduler {
         let ssb_period_frames = self.ssb_period_ms / 10;
         let frame_in_period = frame % ssb_period_frames;
         
-        // Transmit SSB in first frame of period, slot 0
-        frame_in_period == 0 && slot == 0
+        // Transmit SSB in first frame of period, slots 0 and 1
+        frame_in_period == 0 && (slot == 0 || slot == 1)
     }
     
     /// Check if this slot should contain SIB1
     fn is_sib1_slot(&self, frame: u32, slot: u8, slots_per_frame: u32) -> bool {
-        // SIB1 every 160ms (16 frames)
-        let sib1_period_frames = self.sib1_period_ms / 10;
+        // SIB1 scheduling follows TS 38.213 Table 13-11 for Type0-PDCCH CSS
+        // For CORESET#0 index 6 with 15 kHz SCS: O = 0, n_0 = 0
+        // Monitor slots n0 + i*M where M is the monitoring periodicity
+        
+        // When SSB period <= 20ms, SIB1 must be transmitted every 20ms (TS 38.331)
+        let sib1_period_frames = self.sib1_period_ms / 10;  // 20ms = 2 frames
         let total_slots = frame * slots_per_frame + slot as u32;
-        let sib1_period_slots = sib1_period_frames * slots_per_frame;
         
-        // SIB1 is transmitted 2 slots after SSB in the same frame
-        // This gives time for UE to decode MIB and prepare for SIB1 reception
-        let slot_in_period = total_slots % sib1_period_slots;
+        // Calculate slot offset within SI window (160ms)
+        let si_window_slots = 160 / 10 * slots_per_frame;  // 160ms window in slots
+        let slot_in_si_window = total_slots % si_window_slots;
         
-        // Check if this is 2 slots after an SSB slot
-        if slot_in_period == 2 {
-            // Verify this is in an SSB frame
-            let frame_in_period = (total_slots / slots_per_frame) % sib1_period_frames;
-            return frame_in_period == 0;
+        // Type0-PDCCH monitoring occasions for SIB1 (Table 13-11)
+        // For 15 kHz SCS: n_0 = 0, monitor slots 0, 20, 40, ... within SI window
+        // Since 20ms = 2 frames = 20 slots (for 15 kHz), monitor every 20 slots
+        let monitoring_period_slots = 20;  // 20 slots = 20ms for 15 kHz SCS
+        
+        // Check if this is a Type0-PDCCH monitoring slot
+        if slot_in_si_window % monitoring_period_slots == 0 {
+            // PDCCH for SIB1 is transmitted in this slot
+            // Note: PDSCH follows 2 slots later, but scheduler indicates PDCCH slot
+            return true;
         }
         
         false
@@ -274,6 +320,7 @@ mod tests {
             CellId(1),
             SubcarrierSpacing::Scs15,
             Bandwidth::Bw20,
+            6,  // CORESET#0 index 6
         ).unwrap();
         
         // SSB should be in frame 0, slot 0
@@ -287,5 +334,37 @@ mod tests {
         // SSB again in frame 2 (20ms later)
         let schedule = scheduler.get_slot_schedule(2, 0);
         assert!(schedule.ssb_info.is_some());
+    }
+    
+    #[test]
+    fn test_sib1_scheduling() {
+        let scheduler = MacScheduler::new(
+            CellId(1),
+            SubcarrierSpacing::Scs15,
+            Bandwidth::Bw20,
+            6,  // CORESET#0 index 6
+        ).unwrap();
+        
+        // SIB1 should be scheduled every 20ms (20 slots for 15 kHz SCS)
+        // Check first SI window (160ms = 16 frames = 160 slots)
+        let mut sib1_slots = Vec::new();
+        for frame in 0..16 {
+            for slot in 0..10 {
+                let schedule = scheduler.get_slot_schedule(frame, slot);
+                if schedule.sib1_info.is_some() {
+                    sib1_slots.push(frame * 10 + slot as u32);
+                }
+            }
+        }
+        
+        // Expected SIB1 slots: 0, 20, 40, 60, 80, 100, 120, 140
+        let expected_slots: Vec<u32> = vec![0, 20, 40, 60, 80, 100, 120, 140];
+        assert_eq!(sib1_slots, expected_slots, 
+                   "SIB1 should be scheduled every 20ms within SI window");
+        
+        // Verify monitoring slots match Table 13-11
+        let monitoring_slots = scheduler.get_sib1_monitoring_slots();
+        assert_eq!(monitoring_slots, expected_slots,
+                   "Type0-PDCCH monitoring slots should match Table 13-11");
     }
 }

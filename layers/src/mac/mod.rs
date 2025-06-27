@@ -57,6 +57,8 @@ pub struct MacConfig {
     pub max_ues: u16,
     /// SIB1 configuration
     pub sib1_config: Sib1Config,
+    /// CORESET#0 index from configuration
+    pub coreset0_index: u8,
 }
 
 /// MAC-PHY interface for scheduling information
@@ -94,6 +96,7 @@ impl EnhancedMacLayer {
             config.cell_id,
             config.scs,
             config.bandwidth,
+            config.coreset0_index,
         )?;
         
         let sib1_generator = Sib1Generator::new(config.sib1_config.clone());

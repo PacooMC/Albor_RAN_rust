@@ -58,6 +58,8 @@ pub struct ResourceGrid {
     dc_subcarrier: usize,
     /// Guard band size (one side)
     guard_band: usize,
+    /// Cell ID for DMRS generation
+    cell_id: u16,
 }
 
 impl ResourceGrid {
@@ -67,6 +69,17 @@ impl ResourceGrid {
         symbols_per_slot: u8,
         bandwidth: Bandwidth,
         scs: SubcarrierSpacing,
+    ) -> Result<Self, LayerError> {
+        Self::new_with_cell_id(fft_size, symbols_per_slot, bandwidth, scs, 0)
+    }
+    
+    /// Create a new resource grid with cell ID
+    pub fn new_with_cell_id(
+        fft_size: usize,
+        symbols_per_slot: u8,
+        bandwidth: Bandwidth,
+        scs: SubcarrierSpacing,
+        cell_id: u16,
     ) -> Result<Self, LayerError> {
         // Calculate number of RBs based on bandwidth
         let num_rbs = calculate_num_rbs(bandwidth, scs)?;
@@ -97,6 +110,7 @@ impl ResourceGrid {
             symbols_per_slot,
             dc_subcarrier,
             guard_band,
+            cell_id,
         })
     }
     
@@ -194,8 +208,8 @@ impl ResourceGrid {
         Ok(())
     }
     
-    /// Map PSS (Primary Synchronization Signal)
-    pub fn map_pss(&mut self, symbol: u8, pss_sequence: &[Complex32]) -> Result<(), LayerError> {
+    /// Map PSS (Primary Synchronization Signal) with k_SSB offset
+    pub fn map_pss(&mut self, symbol: u8, pss_sequence: &[Complex32], k_ssb: i16) -> Result<(), LayerError> {
         // PSS occupies 127 subcarriers within the SSB
         if pss_sequence.len() != 127 {
             return Err(LayerError::InvalidConfiguration(
@@ -204,13 +218,14 @@ impl ResourceGrid {
         }
         
         // According to 3GPP TS 38.211, PSS starts at subcarrier 56 within the SSB
-        // SSB is 240 subcarriers wide, centered around the SSB center frequency
-        // For now, we center SSB around DC, but this should be configurable
-        let ssb_start_sc = -(240 / 2) as i16;  // SSB starts at -120 from DC
+        // SSB is 240 subcarriers wide
+        // k_SSB is the offset to the first subcarrier of the SSB (not the center!)
+        let ssb_start_sc = k_ssb;  // k_SSB points to first subcarrier of SSB
         let pss_start_within_ssb = 56;  // PSS starts at subcarrier 56 within SSB
         let pss_start_sc = ssb_start_sc + pss_start_within_ssb;
         
         info!("Mapping PSS to resource grid:");
+        info!("  k_SSB: {} subcarriers", k_ssb);
         info!("  SSB starts at subcarrier: {}", ssb_start_sc);
         info!("  PSS starts within SSB at: {}", pss_start_within_ssb);
         info!("  PSS absolute start subcarrier: {}", pss_start_sc);
@@ -223,6 +238,13 @@ impl ResourceGrid {
             info!("  PSS[{}] = {:.3} + {:.3}j -> subcarrier {}", 
                   i, pss_sequence[i].re, pss_sequence[i].im, pss_start_sc + i as i16);
         }
+        
+        // Calculate signal power before mapping
+        let input_power: f32 = pss_sequence.iter().map(|s| s.norm_sqr()).sum::<f32>() / pss_sequence.len() as f32;
+        let input_power_db = 10.0 * input_power.log10();
+        let input_peak = pss_sequence.iter().map(|s| s.norm()).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
+        info!("PSS input signal: power={:.2} dB, peak={:.3}, RMS={:.4}", 
+              input_power_db, input_peak, input_power.sqrt());
         
         let mut mapped_count = 0;
         for (i, &value) in pss_sequence.iter().enumerate() {
@@ -237,14 +259,20 @@ impl ResourceGrid {
             }
             self.grid[(fft_index, symbol as usize)] = value;
             mapped_count += 1;
+            
+            // Log mapping details for first few samples
+            if i < 5 {
+                info!("  Mapped PSS[{}] = {:.3}+{:.3}j to FFT bin {} (subcarrier {})", 
+                      i, value.re, value.im, fft_index, sc);
+            }
         }
-        info!("PSS mapping complete: {} subcarriers mapped", mapped_count);
+        info!("PSS mapping complete: {} subcarriers mapped to resource grid", mapped_count);
         
         Ok(())
     }
     
-    /// Map SSS (Secondary Synchronization Signal)
-    pub fn map_sss(&mut self, symbol: u8, sss_sequence: &[Complex32]) -> Result<(), LayerError> {
+    /// Map SSS (Secondary Synchronization Signal) with k_SSB offset
+    pub fn map_sss(&mut self, symbol: u8, sss_sequence: &[Complex32], k_ssb: i16) -> Result<(), LayerError> {
         // SSS also occupies 127 subcarriers within the SSB
         if sss_sequence.len() != 127 {
             return Err(LayerError::InvalidConfiguration(
@@ -253,12 +281,13 @@ impl ResourceGrid {
         }
         
         // SSS has the same position as PSS within the SSB
-        let ssb_start_sc = -(240 / 2) as i16;  // SSB starts at -120 from DC
+        // k_SSB points to first subcarrier of SSB
+        let ssb_start_sc = k_ssb;  // SSB starts at k_SSB
         let sss_start_within_ssb = 56;  // SSS starts at subcarrier 56 within SSB
         let sss_start_sc = ssb_start_sc + sss_start_within_ssb;
         
-        debug!("Mapping SSS: starts at {} (within SSB: {}), symbol={}", 
-               sss_start_sc, sss_start_within_ssb, symbol);
+        debug!("Mapping SSS: starts at {} (within SSB: {}), symbol={}, k_SSB={}", 
+               sss_start_sc, sss_start_within_ssb, symbol, k_ssb);
         
         for (i, &value) in sss_sequence.iter().enumerate() {
             let sc = sss_start_sc + i as i16;
@@ -269,52 +298,165 @@ impl ResourceGrid {
         Ok(())
     }
     
-    /// Map PBCH (Physical Broadcast Channel)
-    pub fn map_pbch(&mut self, symbol: u8, pbch_symbols: &[Complex32]) -> Result<(), LayerError> {
-        // PBCH occupies 240 subcarriers (20 RBs) centered around DC
-        if pbch_symbols.len() != 240 {
+    /// Map PBCH (Physical Broadcast Channel) with k_SSB offset
+    /// The pbch_symbols contains 432 QPSK symbols that need to be distributed across 3 OFDM symbols
+    /// This function maps the appropriate portion based on the relative symbol position and actual grid symbol
+    pub fn map_pbch(&mut self, relative_symbol: u8, actual_symbol: u8, pbch_symbols: &[Complex32], k_ssb: i16) -> Result<(), LayerError> {
+        // PBCH has 432 QPSK symbols distributed across 3 OFDM symbols
+        if pbch_symbols.len() != 432 {
             return Err(LayerError::InvalidConfiguration(
-                format!("PBCH symbols length must be 240, got {}", pbch_symbols.len())
+                format!("PBCH symbols length must be 432, got {}", pbch_symbols.len())
             ));
         }
         
-        // Map PBCH centered around DC
-        let start_sc = -(240 / 2) as i16;
-        for (i, &value) in pbch_symbols.iter().enumerate() {
-            let sc = start_sc + i as i16;
-            let fft_index = self.subcarrier_to_fft_index(sc);
-            self.grid[(fft_index, symbol as usize)] = value;
+        // Map PBCH with k_SSB offset
+        // k_SSB points to first subcarrier of SSB
+        let start_sc = k_ssb;  // PBCH starts at first subcarrier of SSB
+        
+        // Map PBCH based on relative position within SSB
+        // SSB structure: PSS(0), PBCH(1), SSS(2), PBCH(3)
+        // 432 QPSK symbols are distributed as:
+        // - Symbol 1: 216 symbols (240 subcarriers - 24 DMRS)
+        // - Symbol 2: 96 symbols (48+48 edge subcarriers, avoiding SSS)
+        // - Symbol 3: 216 symbols (240 subcarriers - 24 DMRS)
+        
+        // Calculate symbol offset for extracting the right portion
+        // PBCH mapping in SSB: relative positions 1 and 3 (absolute symbols vary)
+        // Symbol 2 (relative) is SSS position where PBCH maps to edges
+        // For our 432 symbol distribution:
+        // - First PBCH (relative 1): 216 symbols
+        // - SSS position (relative 2): 96 symbols on edges  
+        // - Second PBCH (relative 3): 120 symbols
+        let (symbol_offset, num_symbols) = match relative_symbol {
+            1 => (0, 216),      // First PBCH symbol: symbols 0-215
+            2 => (216, 96),     // SSS symbol with PBCH edges: symbols 216-311
+            3 => (312, 120),    // Second PBCH symbol: symbols 312-431
+            _ => {
+                warn!("Invalid PBCH relative symbol position: {}, expected 1, 2, or 3", relative_symbol);
+                return Err(LayerError::InvalidConfiguration(
+                    format!("Invalid PBCH relative symbol position: {}", relative_symbol)
+                ));
+            }
+        };
+        
+        // Extract the portion of PBCH symbols for this OFDM symbol
+        let end_idx = (symbol_offset + num_symbols).min(pbch_symbols.len());
+        let symbol_portion = &pbch_symbols[symbol_offset..end_idx];
+        
+        if relative_symbol == 2 {
+            // Symbol 2 (SSS position) - map PBCH to edges only
+            // Lower edge: subcarriers 0-47 within SSB
+            let lower_symbols = symbol_portion.len().min(48);
+            for i in 0..lower_symbols {
+                let sc = start_sc + i as i16;
+                let fft_index = self.subcarrier_to_fft_index(sc);
+                self.grid[(fft_index, actual_symbol as usize)] = symbol_portion[i];
+            }
+            
+            // Upper edge: subcarriers 192-239 within SSB
+            if symbol_portion.len() > 48 {
+                let upper_start = 48;
+                let upper_symbols = (symbol_portion.len() - 48).min(48);
+                for i in 0..upper_symbols {
+                    let sc = start_sc + (192 + i) as i16;
+                    let fft_index = self.subcarrier_to_fft_index(sc);
+                    self.grid[(fft_index, actual_symbol as usize)] = symbol_portion[upper_start + i];
+                }
+            }
+            
+            debug!("Mapped {} PBCH symbols in SSS symbol position (rel={}, actual={}): edges only", 
+                   symbol_portion.len(), relative_symbol, actual_symbol);
+        } else {
+            // Symbols 1 and 3: Map to all subcarriers except DMRS positions
+            // DMRS is on every 4th subcarrier starting from v = cell_id % 4
+            // For now, use v=0 as we'll handle DMRS separately
+            let v = 0usize;
+            let mut pbch_idx = 0;
+            
+            for k in 0..240 {
+                // Skip DMRS positions
+                if (k >= v) && ((k - v) % 4 == 0) {
+                    continue;  // This is a DMRS position
+                }
+                
+                if pbch_idx < symbol_portion.len() {
+                    let sc = start_sc + k as i16;
+                    let fft_index = self.subcarrier_to_fft_index(sc);
+                    self.grid[(fft_index, actual_symbol as usize)] = symbol_portion[pbch_idx];
+                    pbch_idx += 1;
+                }
+            }
+            
+            debug!("Mapped {} PBCH symbols to symbol {} (relative {}): data subcarriers only", 
+                   pbch_idx, actual_symbol, relative_symbol);
         }
         
         Ok(())
     }
     
-    /// Map DMRS (Demodulation Reference Signal) for PBCH
-    pub fn map_pbch_dmrs(&mut self, symbol: u8, cell_id: u16) -> Result<(), LayerError> {
+    /// Map DMRS (Demodulation Reference Signal) for PBCH with k_SSB offset
+    pub fn map_pbch_dmrs(&mut self, relative_symbol: u8, actual_symbol: u8, cell_id: u16, k_ssb: i16, 
+                         ssb_idx: u8, frame_number: u32) -> Result<(), LayerError> {
         // PBCH DMRS pattern depends on cell ID
         // According to 3GPP TS 38.211, v = N_cell_ID mod 4
         let v = (cell_id % 4) as usize;
         
-        // Generate DMRS sequence
-        let dmrs_sequence = generate_pbch_dmrs(cell_id);
+        // Generate DMRS sequence with proper parameters
+        let l_max = 4u8; // Default L_max = 4 for FR1
+        let dmrs_sequence = generate_pbch_dmrs(cell_id, ssb_idx, frame_number, l_max);
         
-        // SSB/PBCH spans 240 subcarriers (20 RBs)
-        let ssb_start_sc = -(240 / 2) as i16;
+        // SSB/PBCH spans 240 subcarriers (20 RBs) with k_SSB offset
+        // k_SSB points to first subcarrier of SSB
+        let ssb_start_sc = k_ssb;  // SSB starts at k_SSB
         
-        // DMRS is placed at positions v, v+4, v+8 within each group of 12 subcarriers
         let mut dmrs_idx = 0;
-        for rb in 0..20 {  // 20 RBs in SSB
-            for pos in [v, v + 4, v + 8].iter() {
-                if *pos < 12 && dmrs_idx < dmrs_sequence.len() {
-                    let sc = ssb_start_sc + (rb * 12 + *pos) as i16;
-                    let fft_index = self.subcarrier_to_fft_index(sc);
-                    self.grid[(fft_index, symbol as usize)] = dmrs_sequence[dmrs_idx];
-                    dmrs_idx += 1;
+        
+        // Symbol-specific mapping according to 3GPP TS 38.211
+        match relative_symbol {
+            1 | 3 => {
+                // Symbols 1 and 3: Map across all 240 subcarriers
+                for k in (v..240).step_by(4) {
+                    if dmrs_idx < dmrs_sequence.len() {
+                        let sc = ssb_start_sc + k as i16;
+                        let fft_index = self.subcarrier_to_fft_index(sc);
+                        self.grid[(fft_index, actual_symbol as usize)] = dmrs_sequence[dmrs_idx];
+                        dmrs_idx += 1;
+                    }
                 }
+            }
+            2 => {
+                // Symbol 2: Map only in lower (0-47) and upper (192-239) regions
+                // This avoids the SSS region (48-191)
+                
+                // Lower section (0-47)
+                for k in (v..48).step_by(4) {
+                    if dmrs_idx < dmrs_sequence.len() {
+                        let sc = ssb_start_sc + k as i16;
+                        let fft_index = self.subcarrier_to_fft_index(sc);
+                        self.grid[(fft_index, actual_symbol as usize)] = dmrs_sequence[dmrs_idx];
+                        dmrs_idx += 1;
+                    }
+                }
+                
+                // Upper section (192-239)
+                for k in ((192 + v)..240).step_by(4) {
+                    if dmrs_idx < dmrs_sequence.len() {
+                        let sc = ssb_start_sc + k as i16;
+                        let fft_index = self.subcarrier_to_fft_index(sc);
+                        self.grid[(fft_index, actual_symbol as usize)] = dmrs_sequence[dmrs_idx];
+                        dmrs_idx += 1;
+                    }
+                }
+            }
+            _ => {
+                return Err(LayerError::InvalidConfiguration(
+                    format!("Invalid PBCH DMRS relative symbol: {}", relative_symbol)
+                ));
             }
         }
         
-        debug!("Mapped {} PBCH DMRS symbols with v={} at symbol {}", dmrs_idx, v, symbol);
+        debug!("Mapped {} PBCH DMRS symbols with v={} at symbol {} (relative {}), k_SSB={}, SSB idx={}", 
+               dmrs_idx, v, actual_symbol, relative_symbol, k_ssb, ssb_idx);
         Ok(())
     }
     
@@ -425,24 +567,26 @@ fn calculate_num_rbs(bandwidth: Bandwidth, scs: SubcarrierSpacing) -> Result<u16
     Ok(num_rbs)
 }
 
-/// Generate PBCH DMRS sequence
-fn generate_pbch_dmrs(cell_id: u16) -> Vec<Complex32> {
-    // Simplified DMRS generation
-    // In real implementation, this should use Gold sequence based on cell ID
-    let mut dmrs = Vec::with_capacity(60);
-    let init = 2u32.pow(10) * (7 * (4 + 1) + 1) + 2 * cell_id as u32 + 1;
+/// Generate PBCH DMRS sequence using Gold sequence
+fn generate_pbch_dmrs(cell_id: u16, ssb_idx: u8, frame_number: u32, l_max: u8) -> Vec<Complex32> {
+    use crate::phy::dmrs::{DmrsSequenceGenerator, calculate_pbch_dmrs_cinit};
     
-    // Simple pseudo-random sequence
-    let mut x = init;
-    for _ in 0..60 {
-        x = (x.wrapping_mul(1103515245).wrapping_add(12345)) & 0x7fffffff;
-        let bit = (x >> 16) & 1;
-        let value = if bit == 1 {
-            Complex32::new(1.0 / 2.0_f32.sqrt(), 1.0 / 2.0_f32.sqrt())
-        } else {
-            Complex32::new(-1.0 / 2.0_f32.sqrt(), -1.0 / 2.0_f32.sqrt())
-        };
-        dmrs.push(value);
+    // Calculate half frame number (n_hf)
+    let n_hf = ((frame_number / 5) % 2) as u8;
+    
+    // Calculate initialization value for Gold sequence
+    let c_init = calculate_pbch_dmrs_cinit(cell_id, ssb_idx, n_hf, l_max);
+    
+    // Create Gold sequence generator
+    let mut generator = DmrsSequenceGenerator::new(c_init);
+    
+    // Generate 144 QPSK symbols for PBCH DMRS
+    // Power normalization: 1/sqrt(2) for unit power QPSK
+    let amplitude = 1.0 / std::f32::consts::SQRT_2;
+    let mut dmrs = Vec::with_capacity(144);
+    
+    for _ in 0..144 {
+        dmrs.push(generator.next_qpsk_symbol(amplitude));
     }
     
     dmrs

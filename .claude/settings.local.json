@@ -1,0 +1,26 @@
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Edit(/**)",
+      "Read(/**)",
+      "Write",
+      "MultiEdit",
+      "NotebookEdit",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Glob",
+      "Grep",
+      "LS",
+      "NotebookRead",
+      "TodoRead",
+      "TodoWrite"
+    ],
+    "deny": []
+  },
+  "model": "opus"
+}

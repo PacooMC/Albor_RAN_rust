@@ -4,13 +4,13 @@
 
 cu_cp:
   amf:
-    addr: 127.0.0.4                # AMF on loopback interface
+    addr: 127.0.0.5                # AMF on loopback interface
     port: 38412                     # AMF NGAP port
     bind_addr: 127.0.0.1           # gNodeB bind address
     supported_tracking_areas:
-      - tac: 7
+      - tac: 1
         plmn_list:
-          - plmn: "00101"
+          - plmn: "99970"
             tai_slice_support_list:
               - sst: 1
   inactivity_timer: 7200
@@ -23,7 +23,7 @@ ru_sdr:
   device_driver: zmq
   device_args: tx_port=tcp://127.0.0.1:2000,rx_port=tcp://127.0.0.1:2001,base_srate=11.52e6
   srate: 11.52                      # 11.52 MHz sample rate for 10 MHz bandwidth
-  tx_gain: 75                       # Tutorial tx gain
+  tx_gain: 75                       # Tutorial rx gain
   rx_gain: 75                       # Tutorial rx gain
 
 cell_cfg:
@@ -31,8 +31,8 @@ cell_cfg:
   band: 3                           # Band 3 (1800 MHz FDD)
   channel_bandwidth_MHz: 10         # 10 MHz bandwidth (52 PRBs)
   common_scs: 15                    # 15 kHz subcarrier spacing
-  plmn: "00101"                     # PLMN matching AMF
-  tac: 7                            # TAC matching AMF
+  plmn: "99970"                     # PLMN matching AMF
+  tac: 1                            # TAC matching AMF
   pci: 1                            # Physical Cell ID
   
   pdcch:

@@ -1,0 +1,75 @@
+#
+# Albor RAN Docker Compose Configuration
+# This file combines Open5GS core network with srsRAN and Albor development environment
+#
+
+services:
+  albor-gnb-dev:
+    container_name: albor-gnb-dev
+    build:
+      context: docker-open5gs-allinone/core/open5gs
+      target: open5gs
+      args:
+        OS_VERSION: "22.04"
+        OPEN5GS_VERSION: "v2.7.0"
+    entrypoint: /workspace/entrypoint.sh
+    privileged: true
+    ports:
+      # Open5GS WebUI
+      - "9999:9999/tcp"
+      # NGAP (N2 interface) - gNB to AMF connection
+      - "38412:38412/sctp"
+      # N3 interface - gNB to UPF connection
+      - "2152:2152/udp"
+      # Additional ports for monitoring
+      - "9090:9090"  # Prometheus
+      - "3000:3000"  # Grafana
+    healthcheck:
+      test: [ "CMD-SHELL", "nc -z 127.0.0.20 7777" ]
+      interval: 3s
+      timeout: 1s
+      retries: 60
+    networks:
+      - albor_network
+    volumes:
+      # Mount the entire Albor project directory as /workspace
+      - /home/fmc/Albor_RAN_rust:/workspace:rw
+      # Direct mount for logs - they will appear directly on host
+      - /home/fmc/Albor_RAN_rust/logs:/workspace/logs:rw
+      # Mount localtime for correct timestamps
+      - /etc/localtime:/etc/localtime:ro
+      # Open5GS configuration
+      - ./docker-open5gs-allinone/core/open5gs/open5gs-5gc.yml:/open5gs/open5gs-5gc.yml:ro
+      - ./docker-open5gs-allinone/core/open5gs/open5gs_entrypoint.sh:/open5gs/open5gs_entrypoint.sh:ro
+      - ./docker-open5gs-allinone/core/open5gs/simple_entrypoint.sh:/open5gs/simple_entrypoint.sh:ro
+      - ./docker-open5gs-allinone/core/open5gs/add_users.py:/open5gs/add_users.py:ro
+      - ./docker-open5gs-allinone/core/open5gs/setup_tun.py:/open5gs/setup_tun.py:ro
+      - ./docker-open5gs-allinone/core/open5gs/subscriber_db.csv:/open5gs/subscriber_db.csv:ro
+    working_dir: /workspace
+    environment:
+      # Ensure PATH includes all necessary binaries
+      PATH: "/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/open5gs/build/tests/app/"
+      # Set home for Rust
+      HOME: "/root"
+      # Enable core dumps for debugging
+      RUST_BACKTRACE: "1"
+      # Start Open5GS services
+      START_OPEN5GS: "true"
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - SYS_NICE
+      - SYS_PTRACE
+    stdin_open: true
+    tty: true
+
+networks:
+  albor_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  logs:
+    driver: local

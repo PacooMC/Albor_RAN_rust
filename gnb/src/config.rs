@@ -178,6 +178,27 @@ pub struct PrachConfig {
     pub zero_correlation_zone: u8,
     /// PRACH frequency start
     pub prach_frequency_start: u16,
+    /// Total number of RA preambles
+    #[serde(default = "default_total_nof_ra_preambles")]
+    pub total_nof_ra_preambles: u8,
+    /// Number of SSB per RACH occasion
+    #[serde(default = "default_nof_ssb_per_ro")]
+    pub nof_ssb_per_ro: u8,
+    /// Number of CB preambles per SSB
+    #[serde(default = "default_nof_cb_preambles_per_ssb")]
+    pub nof_cb_preambles_per_ssb: u8,
+}
+
+fn default_total_nof_ra_preambles() -> u8 {
+    64  // Standard value for PRACH
+}
+
+fn default_nof_ssb_per_ro() -> u8 {
+    1  // One SSB per RACH occasion
+}
+
+fn default_nof_cb_preambles_per_ssb() -> u8 {
+    64  // All preambles are CB preambles by default
 }
 
 /// PDSCH configuration
